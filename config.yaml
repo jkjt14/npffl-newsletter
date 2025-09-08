@@ -8,13 +8,10 @@ newsletter:
   trophies: [coupon_clipper, dumpster_fire, galaxy_brain, banana_peel, walk_of_shame]
 
 inputs:
-  # Salary is usually available Monday. We’ll grab by glob so you can drop 2025_02_Salary.xlsx each week.
   salary_glob: "data/salaries/2025_*_Salary.xlsx"
-  # week: null => auto (use last completed week by standings or weeklyResults)
-  week: null
+  week: null   # auto-detect latest completed week
 
 outputs:
   dir: "build"
   post_to_slack: true
-  post_to_mailchimp: false   # flip to true when you add Mailchimp secrets
-
+  post_to_mailchimp: false
