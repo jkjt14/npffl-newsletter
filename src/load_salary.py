@@ -1,27 +1,24 @@
-import glob
+# src/load_salary.py
+from __future__ import annotations
+import glob, os, sys
 import pandas as pd
+from .mfl_client import MFLClient
 
-def load_latest_salary(salary_glob: str) -> pd.DataFrame:
-    files = sorted(glob.glob(salary_glob))
-    if not files:
-        raise FileNotFoundError(f"No salary files match: {salary_glob}")
-    path = files[-1]
-    df = pd.read_excel(path) if path.lower().endswith((".xlsx", ".xls")) else pd.read_csv(path)
+def load_latest_salary(pattern: str, *, year: int, league_id: str, api_key: str, week: int) -> pd.DataFrame:
+    # Try MFL salaries endpoint first
+    try:
+        df = MFLClient(year, league_id, api_key).salaries(week)
+        if isinstance(df, pd.DataFrame) and not df.empty:
+            return df
+    except Exception as e:
+        print(f"[load_salary] WARN salaries API failed: {e}", file=sys.stderr)
 
-    # Normalize expected columns
-    cols = {c.strip().lower(): c for c in df.columns}
-    rename = {}
-    for k,v in cols.items():
-        if k == "name": rename[v] = "Name"
-        if k in ("team","tm"): rename[v] = "Team"
-        if k in ("pos","position"): rename[v] = "Pos"
-        if k in ("salary","sal"): rename[v] = "Salary"
-        if k in ("proj","projection","projected"): rename[v] = "Proj"
-    df = df.rename(columns=rename)
-
-    if "Name" not in df or "Salary" not in df:
-        raise ValueError("Salary file must have columns: Name, Salary (and ideally Team, Pos).")
-
-    df["Name"] = df["Name"].astype(str).str.replace(r"\s+\(.*\)$", "", regex=True).str.strip()
-    keep = [c for c in ["Name","Team","Pos","Salary","Proj"] if c in df.columns]
-    return df[keep].copy()
+    # Fallback to file pattern
+    paths = sorted(glob.glob(pattern))
+    if not paths:
+        print(f"[load_salary] WARN no salary files matching {pattern}", file=sys.stderr)
+        return pd.DataFrame()
+    path = paths[-1]
+    if path.lower().endswith((".xlsx",".xls")):
+        return pd.read_excel(path)
+    return pd.read_csv(path)
