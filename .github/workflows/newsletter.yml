@@ -1,70 +1,52 @@
-name: NPFFL Newsletter
+name: NPFFL Weekly Newsletter
 
 on:
   workflow_dispatch:
     inputs:
       week:
-        description: "Week number to generate (e.g., 1–18)"
-        required: true
-        default: "1"
-  # Uncomment to run on a weekly schedule (Mondays 9:00 AM ET)
-  # schedule:
-  #   - cron: "0 13 * * 1"
+        description: "Week number (1-18). Leave blank to auto-select last completed week."
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 16 * * 2"  # Tuesdays 12:00 PM ET (EDT)
 
 permissions:
   contents: read
 
 jobs:
-  build-and-run:
+  build-newsletter:
     runs-on: ubuntu-latest
     defaults:
       run:
         shell: bash
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Ensure requirements.txt includes needed packages
+      - name: Ensure requirements
         run: |
           set -euo pipefail
           if [ ! -f requirements.txt ]; then
-            echo "Creating minimal requirements.txt"
-            printf "PyYAML>=6.0\nopenpyxl>=3.1\n" > requirements.txt
+            cat > requirements.txt <<'REQ'
+pandas>=2.2
+requests>=2.32
+PyYAML>=6.0
+openpyxl>=3.1
+python-dateutil>=2.9
+jinja2>=3.1
+markdown>=3.6
+beautifulsoup4>=4.12
+lxml>=5.2
+rapidfuzz>=3.7
+REQ
           else
-            grep -qi '^pyyaml' requirements.txt || echo "PyYAML>=6.0" >> requirements.txt
-            grep -qi '^openpyxl' requirements.txt || echo "openpyxl>=3.1" >> requirements.txt
-          fi
-          echo "== requirements.txt =="
-          cat requirements.txt
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run newsletter generator
-        env:
-          WEEK: ${{ inputs.week }}
-        run: |
-          set -euxo pipefail
-          python -m src.main --week "${WEEK}"
-
-      - name: Upload newsletter artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: newsletter-output-week-${{ inputs.week }}
-          path: |
-            output/**
-            **/output/**
-            report/**
-            **/*.html
-            **/*.md
-          if-no-files-found: warn
+            # make sure critical deps exist
+            for pkg in pandas requests PyYAML openpyxl python-dateutil jinja2 markdown beautifulsoup4 lxml rapidfuzz; do
+              grep -iE "^\s*$pkg\b" requirements.txt >/dev/null || echo "$pkg" >> requirements.txt
+            done
