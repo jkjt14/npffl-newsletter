@@ -29,7 +29,7 @@ def leaderboard_values(df: pd.DataFrame, top_n=10):
     team_agg = df.groupby(["FranchiseId","FranchiseName"], dropna=False).agg(
         Total_Salary=("Salary","sum"),
         Total_Points=("Pts","sum"),
-        Avg_Pts_per_$K=("Pts_per_$K","mean")
+        "Avg_Pts_per_$K": ("Pts_per_$K", "mean")
     ).reset_index()
 
     team_best = team_agg.sort_values(["Avg_Pts_per_$K","Total_Points"], ascending=[False, False]).head(5)
