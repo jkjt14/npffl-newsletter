@@ -1,15 +1,14 @@
-from jinja2 import Environment, FileSystemLoader, select_autoescape
-from pathlib import Path
+# src/newsletter.py
+from __future__ import annotations
+import os
+from markdown import markdown
 
-def render_newsletter(context: dict, out_dir: str, week: int):
-    env = Environment(
-        loader=FileSystemLoader(str(Path(__file__).parent / "templates")),
-        autoescape=select_autoescape(enabled_extensions=("html",))
-    )
-    tpl = env.get_template("newsletter.md.j2")
-    md = tpl.render(**context)
-    outp = Path(out_dir)
-    outp.mkdir(parents=True, exist_ok=True)
-    md_path = outp / f"NPFFL_Week_{week:02d}.md"
-    md_path.write_text(md, encoding="utf-8")
-    return str(md_path)
+def write_outputs(week: int, md: str, out_dir: str = "build") -> tuple[str,str]:
+    os.makedirs(out_dir, exist_ok=True)
+    md_path = os.path.join(out_dir, f"NPFFL_Week_{week:02d}.md")
+    html_path = os.path.join(out_dir, f"NPFFL_Week_{week:02d}.html")
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(md)
+    with open(html_path, "w", encoding="utf-8") as f:
+        f.write(markdown(md))
+    return md_path, html_path
