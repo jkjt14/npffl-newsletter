@@ -1,16 +1,39 @@
-npffl-newsletter/
-  .github/workflows/newsletter.yml
-  requirements.txt
-  .env.example
-  config.yaml
-  src/
-    mfl_client.py
-    load_salary.py
-    fetch_week.py
-    value_engine.py
-    roastbook.py
-    newsletter.py
-    post_outputs.py
-    main.py
-    templates/
-      newsletter.md.j2
+name: NPFFL Weekly Newsletter
+
+on:
+  workflow_dispatch:
+    inputs:
+      week:
+        description: "Week number (1-18). Leave blank for auto."
+        required: false
+        default: ""
+  schedule:
+    - cron: "0 16 * * 2"  # Tuesdays 12:00 PM ET during EDT (UTC-4). Switch to 17:00 after DST ends.
+
+jobs:
+  build-newsletter:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run
+        env:
+          MFL_API_KEY: ${{ secrets.MFL_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          MAILCHIMP_API_KEY: ${{ secrets.MAILCHIMP_API_KEY }}
+          MAILCHIMP_SERVER_PREFIX: ${{ secrets.MAILCHIMP_SERVER_PREFIX }}
+          MAILCHIMP_LIST_ID: ${{ secrets.MAILCHIMP_LIST_ID }}
+          WEEK: ${{ github.event.inputs.week }}
+        run: |
+          python -m src.main --week "$WEEK"
