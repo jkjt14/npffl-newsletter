@@ -1,17 +1,16 @@
 year: 2025
 league_id: 35410
 timezone: America/New_York
-
 newsletter:
   title: "NPFFL Weekly Roast"
-  roast_level: aggressive
-  trophies: [coupon_clipper, dumpster_fire, galaxy_brain, banana_peel, walk_of_shame]
-
+  roast_level: "aggressive"
+schedule:
+  cron_utc: "0 16 * * 2"
 inputs:
   salary_glob: "data/salaries/2025_*_Salary.xlsx"
-  week: null   # auto-detect latest completed week
-
+  week_strategy: "auto"
 outputs:
   dir: "build"
-  post_to_slack: true
-  post_to_mailchimp: false
+  push_to_slack: true
+  make_html: true
+trophies: [coupon_clipper, dumpster_fire, galaxy_brain, banana_peel, walk_of_shame]
