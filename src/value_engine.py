@@ -1,12 +1,9 @@
 # src/value_engine.py
 from __future__ import annotations
 
-import math
-from typing import Iterable, Optional, Sequence, Tuple
-
+from typing import Iterable, Optional, Sequence, Tuple, List
 import numpy as np
 import pandas as pd
-
 
 # Candidate projection column names we’ll accept in input data
 PROJ_COL_CANDIDATES: Tuple[str, ...] = (
@@ -19,15 +16,9 @@ PROJ_COL_CANDIDATES: Tuple[str, ...] = (
     "Points",
 )
 
+# ---------- small helpers ----------
 
 def _pick_proj_col(df: pd.DataFrame, explicit: Optional[str] = None) -> str:
-    """
-    Pick a projection column from the dataframe.
-    Priority:
-      1) explicit (if provided and present)
-      2) first existing name from PROJ_COL_CANDIDATES
-    Raises if none are found.
-    """
     if explicit and explicit in df.columns:
         return explicit
     for c in PROJ_COL_CANDIDATES:
@@ -39,11 +30,28 @@ def _pick_proj_col(df: pd.DataFrame, explicit: Optional[str] = None) -> str:
         f"Available columns: {list(df.columns)}"
     )
 
-
 def _coerce_numeric(series: pd.Series) -> pd.Series:
-    """Coerce to numeric safely (handles strings with commas/blank)."""
     return pd.to_numeric(series.astype(str).str.replace(",", "", regex=False), errors="coerce")
 
+def _ensure_cols(df: pd.DataFrame, cols_defaults: List[Tuple[str, object]]) -> pd.DataFrame:
+    """
+    Ensure columns exist; if missing, create with given default value.
+    Returns a copy.
+    """
+    out = df.copy()
+    for c, default in cols_defaults:
+        if c not in out.columns:
+            out[c] = default
+    return out
+
+def _pick_name_col(df: pd.DataFrame) -> str:
+    for c in ("Name", "Player", "Player Name", "FullName", "PlayerName"):
+        if c in df.columns:
+            return c
+    # If nothing reasonable, create a synthetic name column name for downstream selection
+    return None
+
+# ---------- salary attach ----------
 
 def attach_salary(
     players_df: pd.DataFrame,
@@ -57,10 +65,6 @@ def attach_salary(
     ),
     salary_col: str = "Salary",
 ) -> pd.DataFrame:
-    """
-    Attach salary to players_df by trying multiple join keys in priority order.
-    Returns players_df with a `Salary` column merged in (numeric).
-    """
     if salary_col not in salary_df.columns:
         for alt in ("salary", "SALARY", "Cost", "cost", "Price", "price"):
             if alt in salary_df.columns:
@@ -90,6 +94,7 @@ def attach_salary(
     out["Salary"] = np.nan
     return out
 
+# ---------- value metrics ----------
 
 def compute_value(
     df: pd.DataFrame,
@@ -103,11 +108,7 @@ def compute_value(
 
     Adds:
       - Pts_per_K: projected points per $1,000 of salary
-      - (keeps/creates projection column)
-
-    Tolerant behavior:
-      - If no projection column is present, a placeholder 'ProjectedPoints' is created
-        filled with NaN and used to compute NaN Pts_per_K (pipeline keeps running).
+      - Keeps/creates projection column if missing (filled with NaN)
     """
     out = df.copy()
 
@@ -118,7 +119,6 @@ def compute_value(
     try:
         pcol = _pick_proj_col(out, explicit=proj_col)
     except KeyError as e:
-        # Create a placeholder to keep pipeline alive
         pcol = "ProjectedPoints"
         if pcol not in out.columns:
             out[pcol] = np.nan
@@ -130,51 +130,45 @@ def compute_value(
     out[salary_col] = _coerce_numeric(out[salary_col])
     out[pcol] = _coerce_numeric(out[pcol])
 
-    denom = out[salary_col] / 1000.0
-    denom = denom.replace(0, np.nan)
-
+    denom = (out[salary_col] / 1000.0).replace(0, np.nan)
     out[points_per_k_col] = out[pcol] / denom
     return out
 
+# ---------- leaderboards ----------
 
-def leaderboard_values(
+def _aggregate_by(
     df: pd.DataFrame,
+    group_cols: List[str],
     *,
-    groupby: Iterable[str] = ("Pos",),
-    proj_col: Optional[str] = None,
-    points_per_k_col: str = "Pts_per_K",
+    proj_col: Optional[str],
+    points_per_k_col: str,
 ) -> pd.DataFrame:
     """
-    Produce a compact leaderboard of value metrics by group (e.g., by position).
-    Outputs human-friendly labels; internally keeps Python-safe names.
+    Aggregate by group_cols into summary stats and return a tidy dataframe
+    with friendly labels (Avg_Pts_per_$K, etc.). If group_cols are empty,
+    produce a single 'All' group.
     """
-    if not isinstance(groupby, (list, tuple)):
-        groupby = list(groupby)
+    if not group_cols:
+        df = df.copy()
+        df["All"] = "All"
+        group_cols = ["All"]
 
-    if any(col not in df.columns for col in groupby):
-        missing = [c for c in groupby if c not in df.columns]
-        raise KeyError(f"Groupby columns missing from dataframe: {missing}")
-
-    if "Salary" not in df.columns:
-        raise KeyError("Expected 'Salary' in dataframe. Did you run attach_salary()?")
-
-    # Ensure value column exists (and projection col resolves, creating placeholder if needed)
+    # ensure value columns exist
     df = compute_value(df, proj_col=proj_col, salary_col="Salary", points_per_k_col=points_per_k_col)
 
-    # After compute_value, determine the resolved projection column
+    # figure out projection column name now present
     try:
         pcol = _pick_proj_col(df, explicit=proj_col)
     except KeyError:
-        pcol = "ProjectedPoints"  # created by compute_value if missing
+        pcol = "ProjectedPoints"
 
-    g = df.groupby(list(groupby), dropna=False)
+    g = df.groupby(group_cols, dropna=False)
     agg_map = {
         "Salary": ["count", "mean", "median"],
         pcol: ["mean", "median", "max"],
         points_per_k_col: ["mean"],
     }
     agg = g.agg(agg_map)
-
     agg.columns = ["_".join([c for c in map(str, col) if c and c != "<lambda>"]).strip("_") for col in agg.columns]
     agg = agg.reset_index()
 
@@ -189,7 +183,8 @@ def leaderboard_values(
     }
     agg = agg.rename(columns=rename_map)
 
-    desired_order = list(groupby) + [
+    # Order columns
+    desired = group_cols + [
         "Count",
         "Avg_Salary",
         "Median_Salary",
@@ -198,11 +193,77 @@ def leaderboard_values(
         "Max_Proj",
         "Avg_Pts_per_$K",
     ]
-    existing = [c for c in desired_order if c in agg.columns]
+    existing = [c for c in desired if c in agg.columns]
     remainder = [c for c in agg.columns if c not in existing]
     agg = agg[existing + remainder]
     return agg
 
+def leaderboard_values(
+    df: pd.DataFrame,
+    *,
+    groupby: Iterable[str] = ("Pos",),
+    proj_col: Optional[str] = None,
+    points_per_k_col: str = "Pts_per_K",
+    top_n: int = 10,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Return four leaderboards expected by main.py:
+      (best_ind, worst_ind, team_best, team_worst)
+
+    - Robust to missing columns:
+        * If 'Pos' missing, uses a synthetic 'ALL' Pos.
+        * If 'Team' missing, uses synthetic 'FA'.
+    - Robust to empty frames: returns empty but correctly-shaped outputs.
+    """
+    # If df is empty or only Salary exists, still compute_value to add Pts_per_K/ProjectedPoints
+    base = compute_value(df if df is not None else pd.DataFrame(), proj_col=proj_col)
+
+    # Ensure standard columns exist for ranking/selection
+    name_col = _pick_name_col(base)
+    sel_cols = []
+    if name_col:
+        sel_cols.append(name_col)
+    base = _ensure_cols(base, [
+        ("Team", "FA"),
+        ("Pos", "ALL"),
+        ("Salary", np.nan),
+        ("ProjectedPoints", np.nan),   # may already exist; harmless
+        ("Pts_per_K", np.nan),
+    ])
+
+    # --- best/worst individuals by value ---
+    sortable = base.copy()
+    # safer replace inf with NaN to avoid weird ordering
+    sortable["Pts_per_K"] = pd.to_numeric(sortable["Pts_per_K"], errors="coerce").replace([np.inf, -np.inf], np.nan)
+
+    cols_for_ind = (sel_cols + ["Team", "Pos", "Salary", "ProjectedPoints", "Pts_per_K"])
+    cols_for_ind = [c for c in cols_for_ind if c in sortable.columns]
+
+    best_ind = (
+        sortable.sort_values("Pts_per_K", ascending=False, na_position="last")
+        .head(top_n)[cols_for_ind]
+        .reset_index(drop=True)
+    )
+    worst_ind = (
+        sortable.sort_values("Pts_per_K", ascending=True, na_position="last")
+        .head(top_n)[cols_for_ind]
+        .reset_index(drop=True)
+    )
+
+    # --- team aggregates (best/worst) ---
+    team_agg = _aggregate_by(base, ["Team"], proj_col=proj_col, points_per_k_col=points_per_k_col)
+    # when Team was synthetic 'FA' for all rows, this still returns one-row summary
+    team_best = team_agg.sort_values("Avg_Pts_per_$K", ascending=False, na_position="last").head(top_n).reset_index(drop=True)
+    team_worst = team_agg.sort_values("Avg_Pts_per_$K", ascending=True,  na_position="last").head(top_n).reset_index(drop=True)
+
+    # Ensure all four outputs exist even if df was empty
+    for out in (best_ind, worst_ind, team_best, team_worst):
+        # nothing to do; already DataFrames
+        pass
+
+    return best_ind, worst_ind, team_best, team_worst
+
+# ---------- optional: intra-group ranking ----------
 
 def rank_value_within_group(
     df: pd.DataFrame,
@@ -212,11 +273,11 @@ def rank_value_within_group(
     rank_col: str = "Value_Rank",
     ascending: bool = False,
 ) -> pd.DataFrame:
-    """
-    Rank players by value within group (default: by Pos). Lower rank is better when ascending=False.
-    """
     if value_col not in df.columns:
         raise KeyError(f"Missing '{value_col}'. Did you call compute_value()?")
+
+    if not isinstance(groupby, (list, tuple)):
+        groupby = list(groupby)
 
     out = df.copy()
     out[rank_col] = (
