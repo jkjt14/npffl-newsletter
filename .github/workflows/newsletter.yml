@@ -31,15 +31,15 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Ensure PyYAML in requirements.txt
+      - name: Ensure requirements.txt includes needed packages
         run: |
           set -euo pipefail
           if [ ! -f requirements.txt ]; then
             echo "Creating minimal requirements.txt"
-            printf "PyYAML>=6.0\n" > requirements.txt
-          elif ! grep -Eiq '^\s*pyyaml' requirements.txt; then
-            echo "Appending PyYAML to requirements.txt"
-            echo "PyYAML>=6.0" >> requirements.txt
+            printf "PyYAML>=6.0\nopenpyxl>=3.1\n" > requirements.txt
+          else
+            grep -qi '^pyyaml' requirements.txt || echo "PyYAML>=6.0" >> requirements.txt
+            grep -qi '^openpyxl' requirements.txt || echo "openpyxl>=3.1" >> requirements.txt
           fi
           echo "== requirements.txt =="
           cat requirements.txt
@@ -61,7 +61,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: newsletter-output-week-${{ inputs.week }}
-          # Adjust these paths to wherever your script writes files
           path: |
             output/**
             **/output/**
