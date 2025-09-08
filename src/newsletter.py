@@ -13,4 +13,3 @@ def render_newsletter(context: dict, out_dir: str, week: int):
     md_path = outp / f"NPFFL_Week_{week:02d}.md"
     md_path.write_text(md, encoding="utf-8")
     return str(md_path)
-
