@@ -8,7 +8,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 16 * * 2"  # Tuesdays 12:00 PM ET during EDT (UTC-4). Switch to 17:00 after DST ends.
+    - cron: "0 16 * * 2"  # Tuesdays 12:00 PM ET during DST (UTC-4)
 
 jobs:
   build-newsletter:
@@ -27,7 +27,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run
+      - name: Run newsletter
         env:
           MFL_API_KEY: ${{ secrets.MFL_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -36,4 +36,4 @@ jobs:
           MAILCHIMP_LIST_ID: ${{ secrets.MAILCHIMP_LIST_ID }}
           WEEK: ${{ github.event.inputs.week }}
         run: |
-          python -m src.main --week "$WEEK"
+          python -m src.main --week "${WEEK}"
