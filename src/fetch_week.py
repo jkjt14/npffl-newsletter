@@ -4,31 +4,27 @@ from __future__ import annotations
 import os
 import re
 import sys
-from typing import Iterable, Optional, List, Dict
+from typing import Iterable, Optional, List, Tuple, Dict
 
 import pandas as pd
 import numpy as np
 
 
-# =========================
-# Generic file I/O helpers
-# =========================
+# ===========
+# Utilities
+# ===========
 
 def _normalize(s: str) -> str:
-    """Lowercase and collapse non-alnum to underscores for fuzzy column matching."""
-    t = re.sub(r"[^0-9A-Za-z]+", "_", s.strip().lower())
+    t = re.sub(r"[^0-9A-Za-z]+", "_", str(s).strip().lower())
     return re.sub(r"_+", "_", t).strip("_")
 
 
 def _find_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
-    """Find a column by normalized name among candidate names. Tries exact then partial."""
     norm_map = {_normalize(c): c for c in df.columns}
-    # exact
     for cand in candidates:
         key = _normalize(cand)
         if key in norm_map:
             return norm_map[key]
-    # partial (contains)
     for cand in candidates:
         key = _normalize(cand)
         for k, orig in norm_map.items():
@@ -38,102 +34,126 @@ def _find_col(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
 
 
 def _read_any(path: str, sheet: Optional[str] = None) -> pd.DataFrame:
-    """Read CSV/XLSX/JSON based on file extension."""
     ext = os.path.splitext(path)[1].lower()
     if ext in (".csv", ".txt"):
         return pd.read_csv(path)
     if ext in (".xlsx", ".xls"):
         return pd.read_excel(path, sheet_name=sheet or 0)
-    if ext in (".json",):
+    if ext == ".json":
         return pd.read_json(path)
     raise ValueError(f"Unsupported file extension: {ext}")
 
 
-def _candidate_paths(week: int) -> List[str]:
-    """Common path patterns to try when path is not provided."""
-    w = int(week)
-    candidates = [
-        f"data/weekly_week{w}.csv",
-        f"data/weekly/week{w}.csv",
-        f"data/weekly/weekly_week{w}.csv",
-        f"data/week{w}.csv",
-        f"weekly_week{w}.csv",
-
-        f"data/weekly_week{w}.xlsx",
-        f"data/weekly/week{w}.xlsx",
-        f"data/weekly/weekly_week{w}.xlsx",
-        f"data/week{w}.xlsx",
-        f"weekly_week{w}.xlsx",
-
-        f"data/weekly_week{w}.json",
-        f"data/weekly/week{w}.json",
-        f"data/weekly/weekly_week{w}.json",
-        f"data/week{w}.json",
-        f"weekly_week{w}.json",
-    ]
-    return candidates
-
-
-# ==================================
-# Public API expected by main.py
-# ==================================
-
-def get_weekly_data(week: int, path: Optional[str] = None, sheet: Optional[str] = None) -> pd.DataFrame:
+def _try_load(kind: str, week: int, explicit_path: Optional[str] = None, sheet: Optional[str] = None) -> pd.DataFrame:
     """
-    Load the raw weekly lineup/results table for a given week.
-
-    Loading priority:
-      1) explicit path argument (if provided)
-      2) NPFFL_WEEKLY_PATH env var (if set)
-      3) Common repo paths for week N:
-         - data/weekly_week{N}.csv
-         - data/weekly/week{N}.csv
-         - data/weekly_week{N}.xlsx (sheet optional)
-         - ... (also tries .json)
-
-    Returns
-    -------
-    DataFrame
-        Raw weekly dataframe. If no file is found, returns an empty DataFrame
-        and prints a clear warning to stderr (so the pipeline won’t hard-fail).
+    Load a dataset of a given 'kind' for the week, trying:
+      1) explicit_path
+      2) env var NPFFL_{KIND}_PATH
+      3) common repo paths
+    If not found, returns empty DataFrame and logs a warning.
     """
-    # 1) explicit path param
-    if path:
-        if os.path.exists(path):
+    # 1) explicit
+    if explicit_path:
+        if os.path.exists(explicit_path):
             try:
-                return _read_any(path, sheet=sheet)
+                return _read_any(explicit_path, sheet=sheet)
             except Exception as e:
-                print(f"[fetch_week] ERROR: Failed to read path={path}: {e}", file=sys.stderr, flush=True)
+                print(f"[fetch_week] ERROR reading {kind} from explicit path '{explicit_path}': {e}",
+                      file=sys.stderr, flush=True)
         else:
-            print(f"[fetch_week] WARNING: Path does not exist: {path}", file=sys.stderr, flush=True)
+            print(f"[fetch_week] WARNING: explicit {kind} path not found: {explicit_path}",
+                  file=sys.stderr, flush=True)
 
     # 2) env var
-    envp = os.getenv("NPFFL_WEEKLY_PATH")
-    if envp:
-        if os.path.exists(envp):
+    env_key = f"NPFFL_{kind.upper()}_PATH"
+    env_path = os.getenv(env_key)
+    if env_path:
+        if os.path.exists(env_path):
             try:
-                return _read_any(envp, sheet=sheet)
+                return _read_any(env_path, sheet=sheet)
             except Exception as e:
-                print(f"[fetch_week] ERROR: Failed to read NPFFL_WEEKLY_PATH={envp}: {e}", file=sys.stderr, flush=True)
+                print(f"[fetch_week] ERROR reading {kind} from {env_key}='{env_path}': {e}",
+                      file=sys.stderr, flush=True)
         else:
-            print(f"[fetch_week] WARNING: NPFFL_WEEKLY_PATH does not exist: {envp}", file=sys.stderr, flush=True)
+            print(f"[fetch_week] WARNING: {env_key} not found at '{env_path}'",
+                  file=sys.stderr, flush=True)
 
     # 3) common candidates
-    for cand in _candidate_paths(week):
+    w = int(week)
+    base_candidates = [
+        f"data/{kind}_week{w}.csv",
+        f"data/{kind}/week{w}.csv",
+        f"data/{kind}/week_{w}.csv",
+        f"{kind}_week{w}.csv",
+
+        f"data/{kind}_week{w}.xlsx",
+        f"data/{kind}/week{w}.xlsx",
+        f"data/{kind}/week_{w}.xlsx",
+        f"{kind}_week{w}.xlsx",
+
+        f"data/{kind}_week{w}.json",
+        f"data/{kind}/week{w}.json",
+        f"data/{kind}/week_{w}.json",
+        f"{kind}_week{w}.json",
+    ]
+    for cand in base_candidates:
         if os.path.exists(cand):
             try:
                 return _read_any(cand, sheet=sheet)
             except Exception as e:
-                print(f"[fetch_week] ERROR: Failed to read {cand}: {e}", file=sys.stderr, flush=True)
+                print(f"[fetch_week] ERROR reading {kind} from '{cand}': {e}",
+                      file=sys.stderr, flush=True)
 
-    # Nothing found — return empty to keep pipeline alive (downstream can handle)
-    print(
-        f"[fetch_week] WARNING: No weekly file found for week={week}. "
-        "Returning empty DataFrame.",
-        file=sys.stderr,
-        flush=True,
-    )
+    # Not found
+    print(f"[fetch_week] WARNING: No {kind} file found for week={w}; returning empty DataFrame.",
+          file=sys.stderr, flush=True)
     return pd.DataFrame()
+
+
+# =========================
+# Public API used by main.py
+# =========================
+
+def get_weekly_data(
+    year: int,
+    league_id: str,
+    api_key: str,
+    week: int,
+    *,
+    weekly_path: Optional[str] = None,
+    standings_path: Optional[str] = None,
+    survivor_path: Optional[str] = None,
+    pool_nfl_path: Optional[str] = None,
+    sheet: Optional[str] = None,
+) -> Tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Return (wk, standings, weekly, survivor, pool_nfl) for the requested week.
+
+    This implementation is file-driven (no network calls). It tries:
+      explicit paths -> env vars -> common repo paths. Missing files
+      come back as empty DataFrames so CI can continue.
+
+    Env var overrides (optional):
+      NPFFL_STANDINGS_PATH
+      NPFFL_WEEKLY_PATH
+      NPFFL_SURVIVOR_PATH
+      NPFFL_POOL_NFL_PATH
+    """
+    wk = int(week)
+
+    standings = _try_load("standings", wk, explicit_path=standings_path, sheet=sheet)
+    weekly    = _try_load("weekly",    wk, explicit_path=weekly_path,    sheet=sheet)
+    survivor  = _try_load("survivor",  wk, explicit_path=survivor_path,  sheet=sheet)
+    pool_nfl  = _try_load("pool_nfl",  wk, explicit_path=pool_nfl_path,  sheet=sheet)
+
+    # Lightweight visibility
+    def _shape(df: pd.DataFrame) -> str:
+        return f"{df.shape[0]}x{df.shape[1]}" if isinstance(df, pd.DataFrame) else "NA"
+
+    print(f"[fetch_week] Loaded week={wk} -> standings={_shape(standings)}, weekly={_shape(weekly)}, "
+          f"survivor={_shape(survivor)}, pool_nfl={_shape(pool_nfl)}", file=sys.stderr, flush=True)
+
+    return wk, standings, weekly, survivor, pool_nfl
 
 
 def flatten_weekly_starters(df: pd.DataFrame) -> pd.DataFrame:
@@ -141,17 +161,14 @@ def flatten_weekly_starters(df: pd.DataFrame) -> pd.DataFrame:
     Return only starters from a weekly dataframe.
 
     Strategy:
-      1) Try to find an explicit starter flag column (case/space tolerant):
-         ["Starter","Is Starter","IsStarter","Starting","In Lineup","Active","Starter?"].
-      2) Fallback: infer from a 'slot' style column (BN/Bench/IR/RES/etc. -> not starter).
+      1) Find explicit starter flag column (case/space tolerant).
+      2) Fallback: infer from slot/roster column (exclude BN/Bench/IR/RES/etc.).
       3) If neither exists, warn and return df unchanged (assume all starters).
-
-    This function is defensive so CI won’t explode on minor schema drift.
     """
     if df is None or len(df) == 0:
         return df.copy()
 
-    # ----- explicit starter flag
+    # Explicit starter flags
     starter_candidates = [
         "Starter", "Starters", "Is Starter", "IsStarter", "Starting", "In Lineup",
         "InLineup", "Active", "Starter?", "Starter Flag", "Starter_YN", "is_starter",
@@ -159,7 +176,6 @@ def flatten_weekly_starters(df: pd.DataFrame) -> pd.DataFrame:
     starter_col = _find_col(df, starter_candidates)
     if starter_col:
         mask = _coerce_bool_series(df[starter_col])
-        # If many NA after coercion, try numeric > 0 as truthy
         if mask.isna().mean() > 0.5:
             try:
                 num = pd.to_numeric(df[starter_col], errors="coerce")
@@ -168,12 +184,11 @@ def flatten_weekly_starters(df: pd.DataFrame) -> pd.DataFrame:
                 pass
         return df[mask.fillna(False)].copy()
 
-    # ----- infer via slot/roster column
+    # Infer from slot/roster
     inferred = _infer_from_slot(df)
     if inferred is not None:
         return df[inferred.fillna(False)].copy()
 
-    # ----- last resort: let pipeline proceed
     print(
         "[fetch_week] WARNING: Could not locate a 'Starter' or 'Slot' column. "
         "Proceeding with ALL rows treated as starters.",
@@ -184,11 +199,10 @@ def flatten_weekly_starters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =========================
-# Internals for inference
+# Inference internals
 # =========================
 
 def _coerce_bool_series(s: pd.Series) -> pd.Series:
-    """Coerce varied truthy/falsey markers into booleans (dtype=boolean)."""
     if s.dtype == bool or str(s.dtype) == "boolean":
         return s.astype("boolean")
     st = s.astype(str).str.strip().str.lower()
@@ -199,10 +213,6 @@ def _coerce_bool_series(s: pd.Series) -> pd.Series:
 
 
 def _infer_from_slot(df: pd.DataFrame) -> Optional[pd.Series]:
-    """
-    Infer starters from a slot/lineup column where bench-like slots are excluded.
-    Returns a boolean series or None if no slot column.
-    """
     slot_candidates = [
         "Slot", "Lineup Slot", "LineupSlot", "Roster Slot", "Position Slot", "RosterPosition",
         "Roster_Pos", "RosterPos", "PosSlot", "MFL_Slot", "Position", "Pos",
