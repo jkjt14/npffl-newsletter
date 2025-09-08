@@ -1,40 +1,71 @@
-name: NPFFL Weekly Newsletter
+name: NPFFL Newsletter
 
 on:
   workflow_dispatch:
     inputs:
       week:
-        description: "Week number (1-18). Leave blank for auto."
-        required: false
-        default: ""
-  schedule:
-    - cron: "0 16 * * 2"  # Tuesdays 12:00 PM ET during DST (UTC-4)
+        description: "Week number to generate (e.g., 1–18)"
+        required: true
+        default: "1"
+  # Uncomment to run on a weekly schedule (Mondays 9:00 AM ET)
+  # schedule:
+  #   - cron: "0 13 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
-  build-newsletter:
+  build-and-run:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+
+      - name: Ensure PyYAML in requirements.txt
+        run: |
+          set -euo pipefail
+          if [ ! -f requirements.txt ]; then
+            echo "Creating minimal requirements.txt"
+            printf "PyYAML>=6.0\n" > requirements.txt
+          elif ! grep -Eiq '^\s*pyyaml' requirements.txt; then
+            echo "Appending PyYAML to requirements.txt"
+            echo "PyYAML>=6.0" >> requirements.txt
+          fi
+          echo "== requirements.txt =="
+          cat requirements.txt
 
       - name: Install dependencies
         run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-
-      - name: Run newsletter
+      - name: Run newsletter generator
         env:
-          MFL_API_KEY: ${{ secrets.MFL_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          MAILCHIMP_API_KEY: ${{ secrets.MAILCHIMP_API_KEY }}
-          MAILCHIMP_SERVER_PREFIX: ${{ secrets.MAILCHIMP_SERVER_PREFIX }}
-          MAILCHIMP_LIST_ID: ${{ secrets.MAILCHIMP_LIST_ID }}
-          WEEK: ${{ github.event.inputs.week }}
+          WEEK: ${{ inputs.week }}
         run: |
+          set -euxo pipefail
           python -m src.main --week "${WEEK}"
+
+      - name: Upload newsletter artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: newsletter-output-week-${{ inputs.week }}
+          # Adjust these paths to wherever your script writes files
+          path: |
+            output/**
+            **/output/**
+            report/**
+            **/*.html
+            **/*.md
+          if-no-files-found: warn
