@@ -1,0 +1,16 @@
+npffl-newsletter/
+  .github/workflows/newsletter.yml
+  requirements.txt
+  .env.example
+  config.yaml
+  src/
+    mfl_client.py
+    load_salary.py
+    fetch_week.py
+    value_engine.py
+    roastbook.py
+    newsletter.py
+    post_outputs.py
+    main.py
+    templates/
+      newsletter.md.j2
