@@ -1,288 +1,223 @@
-# src/value_engine.py
 from __future__ import annotations
 
-from typing import Iterable, Optional, Sequence, Tuple, List
-import numpy as np
-import pandas as pd
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
-# Candidate projection column names we’ll accept in input data
-PROJ_COL_CANDIDATES: Tuple[str, ...] = (
-    "PROJ. FPTS",
-    "Proj",
-    "ProjectedPoints",
-    "Projected_Points",
-    "FPTS",
-    "Projected",
-    "Points",
-)
+import math
 
-# ---------- small helpers ----------
+try:
+    import pandas as pd
+except Exception:  # keep pipeline green even if pandas not present for some reason
+    pd = None
 
-def _pick_proj_col(df: pd.DataFrame, explicit: Optional[str] = None) -> str:
-    if explicit and explicit in df.columns:
-        return explicit
-    for c in PROJ_COL_CANDIDATES:
-        if c in df.columns:
-            return c
-    raise KeyError(
-        "Could not find a projection column. "
-        f"Tried: {', '.join(PROJ_COL_CANDIDATES)}. "
-        f"Available columns: {list(df.columns)}"
-    )
+try:
+    from rapidfuzz import process, fuzz  # optional fuzzy matcher
+except Exception:
+    process = None
+    fuzz = None
 
-def _coerce_numeric(series: pd.Series) -> pd.Series:
-    return pd.to_numeric(series.astype(str).str.replace(",", "", regex=False), errors="coerce")
 
-def _ensure_cols(df: pd.DataFrame, cols_defaults: List[Tuple[str, object]]) -> pd.DataFrame:
-    """
-    Ensure columns exist; if missing, create with given default value.
-    Returns a copy.
-    """
-    out = df.copy()
-    for c, default in cols_defaults:
-        if c not in out.columns:
-            out[c] = default
-    return out
+# -----------------------------
+# Utilities
+# -----------------------------
 
-def _pick_name_col(df: pd.DataFrame) -> str:
-    for c in ("Name", "Player", "Player Name", "FullName", "PlayerName"):
-        if c in df.columns:
-            return c
-    # If nothing reasonable, create a synthetic name column name for downstream selection
+def _as_list(x):
+    if isinstance(x, list):
+        return x
+    if isinstance(x, dict):
+        return [x]
+    return []
+
+
+def _norm_colnames(df):
+    return {c.lower(): c for c in df.columns}
+
+
+def _safe_num(x, default=0.0) -> float:
+    try:
+        if x is None or (isinstance(x, str) and x.strip() == ""):
+            return float(default)
+        return float(x)
+    except Exception:
+        return float(default)
+
+
+def _ppk(points: float, salary: float) -> Optional[float]:
+    if salary and salary > 0:
+        return round(points / (salary / 1000.0), 4)
     return None
 
-# ---------- salary attach ----------
 
-def attach_salary(
-    players_df: pd.DataFrame,
-    salary_df: pd.DataFrame,
-    *,
-    on_priority: Sequence[Sequence[str]] = (
-        ("player_id",),
-        ("Name", "Team", "Pos"),
-        ("Name", "Pos"),
-        ("Name",),
-    ),
-    salary_col: str = "Salary",
-) -> pd.DataFrame:
-    if salary_col not in salary_df.columns:
-        for alt in ("salary", "SALARY", "Cost", "cost", "Price", "price"):
-            if alt in salary_df.columns:
-                salary_col = alt
-                break
-        else:
-            raise KeyError(
-                f"Salary column not found. Looked for '{salary_col}' "
-                "and common variants (salary, SALARY, Cost, cost, Price, price)."
-            )
-
-    s = salary_df.copy()
-    s["Salary"] = _coerce_numeric(s[salary_col])
-
-    for keys in on_priority:
-        if all(k in players_df.columns for k in keys) and all(k in s.columns for k in keys):
-            merged = players_df.merge(
-                s[list(keys) + ["Salary"]],
-                on=list(keys),
-                how="left",
-                validate="m:1",
-            )
-            if merged["Salary"].notna().any():
-                return merged
-
-    out = players_df.copy()
-    out["Salary"] = np.nan
-    return out
-
-# ---------- value metrics ----------
-
-def compute_value(
-    df: pd.DataFrame,
-    *,
-    proj_col: Optional[str] = None,
-    salary_col: str = "Salary",
-    points_per_k_col: str = "Pts_per_K",
-) -> pd.DataFrame:
+def _best_effort_player_lookup(
+    player_id: str,
+    player_id_to_name: Dict[str, str],
+    salary_df_names: List[str],
+    salary_lookup: Dict[str, float],
+) -> Tuple[str, Optional[float]]:
     """
-    Compute per-dollar value metrics.
-
-    Adds:
-      - Pts_per_K: projected points per $1,000 of salary
-      - Keeps/creates projection column if missing (filled with NaN)
+    Returns (name, salary) using:
+      1) direct name via playerScores mapping (id->name)
+      2) fuzzy match name -> salary_df
+      3) fallback (id-str, None)
     """
-    out = df.copy()
+    # Direct (if we have name by ID)
+    name = player_id_to_name.get(player_id)
+    if name:
+        # exact name match to salary sheet
+        sal = salary_lookup.get(name.lower())
+        if sal is not None:
+            return name, sal
+        # fuzzy match if available
+        if process and salary_df_names:
+            match = process.extractOne(name, salary_df_names, scorer=fuzz.WRatio)
+            if match and match[1] >= 88:  # reasonably strict
+                matched_name = match[0]
+                sal = salary_lookup.get(matched_name.lower())
+                return matched_name, sal
+        return name, None
 
-    if salary_col not in out.columns:
-        raise KeyError(f"Missing salary column '{salary_col}' in dataframe.")
+    # no name → cannot fuzzy; fall back to ID
+    return player_id, None
 
-    # Find or create a projection column
-    try:
-        pcol = _pick_proj_col(out, explicit=proj_col)
-    except KeyError as e:
-        pcol = "ProjectedPoints"
-        if pcol not in out.columns:
-            out[pcol] = np.nan
-        print(
-            f"[value_engine] WARNING: {e}. Created placeholder '{pcol}' with NaN values.",
-            flush=True,
+
+# -----------------------------
+# Core
+# -----------------------------
+
+def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Produce:
+      - top_values (list of dicts)
+      - top_busts (list of dicts)
+      - per_pos buckets if position is known
+    Uses starter players from weeklyResults and their points.
+    Salary source: salary_df
+      - Preferred columns: 'Player' (or 'Name'), 'Pos'/'Position', 'Team', 'Salary'
+      - Optional: 'MFL_ID' for direct ID joins
+    Name resolution:
+      - First try MFL_ID
+      - Then try mapping from playerScores to get a 'name' for id
+      - Then fuzzy match to salary names
+    """
+
+    # Defensive: if pandas missing or no salary_df, we still render from starters with None salaries
+    if pd is None:
+        return {}
+
+    # Normalize salary df
+    salary_lookup: Dict[str, float] = {}
+    pos_lookup: Dict[str, str] = {}
+    team_lookup: Dict[str, str] = {}
+    id_to_salary: Dict[str, float] = {}
+
+    if salary_df is not None and not getattr(salary_df, "empty", True):
+        cols = _norm_colnames(salary_df)
+        name_col = cols.get("player") or cols.get("name")
+        pos_col = cols.get("pos") or cols.get("position")
+        team_col = cols.get("team")
+        salary_col = cols.get("salary")
+        id_col = cols.get("mfl_id") or cols.get("id")
+
+        df = salary_df.copy()
+        if salary_col:
+            df[salary_col] = pd.to_numeric(df[salary_col], errors="coerce")
+
+        for _, r in df.iterrows():
+            n = (str(r[name_col]).strip() if name_col in df.columns else None) if name_col else None
+            s = float(r[salary_col]) if (salary_col and not pd.isna(r.get(salary_col))) else None
+            p = (str(r[pos_col]).strip() if pos_col in df.columns else None) if pos_col else None
+            t = (str(r[team_col]).strip() if team_col in df.columns else None) if team_col else None
+            pid = (str(r[id_col]).strip() if id_col in df.columns else None) if id_col else None
+            if n:
+                salary_lookup[n.lower()] = s if s is not None else None
+                if p:
+                    pos_lookup[n.lower()] = p
+                if t:
+                    team_lookup[n.lower()] = t
+            if pid and s is not None:
+                id_to_salary[pid] = s
+
+    # Map player_id -> name from playerScores if present
+    player_id_to_name: Dict[str, str] = {}
+    ps = week_data.get("player_scores")
+    if isinstance(ps, dict):
+        ps_root = ps.get("playerScores") or {}
+        for pnode in _as_list(ps_root.get("player")):
+            pid = str(pnode.get("id", "")).strip()
+            nm = pnode.get("name")  # some leagues include 'name' — not guaranteed
+            if nm:
+                player_id_to_name[pid] = str(nm).strip()
+
+    # Collect starters from weeklyResults
+    starters: List[Dict[str, Any]] = []
+    wr = week_data.get("weekly_results") or {}
+    wr_root = wr.get("weeklyResults") if isinstance(wr, dict) else None
+    for fr in _as_list(wr_root.get("franchise") if isinstance(wr_root, dict) else None):
+        fid = str(fr.get("id") or "unknown")
+        for p in _as_list(fr.get("player")):
+            # Many exports only include starters; if a 'status' exists, prefer status=="starter"
+            status = str(p.get("status") or "").lower()
+            if status and status not in ("starter", "s"):
+                continue
+            pid = str(p.get("id") or "").strip()
+            pts = _safe_num(p.get("score"), 0)
+            starters.append({"franchise_id": fid, "player_id": pid, "pts": pts})
+
+    # Enrich starters with names, positions, salaries
+    salary_names_list = list(salary_lookup.keys())
+    enriched: List[Dict[str, Any]] = []
+    for row in starters:
+        pid = row["player_id"]
+        pts = row["pts"]
+
+        # Prefer direct ID->salary (if salary sheet had MFL_ID)
+        sal = id_to_salary.get(pid)
+
+        # Resolve a name and/or salary via mapping/fuzzy
+        name, sal2 = _best_effort_player_lookup(pid, player_id_to_name, salary_names_list, salary_lookup)
+        if sal is None:
+            sal = sal2
+
+        # get pos/team if we resolved to a name
+        nmkey = name.lower() if isinstance(name, str) else None
+        pos = pos_lookup.get(nmkey) if nmkey else None
+        team = team_lookup.get(nmkey) if nmkey else None
+
+        enriched.append(
+            {
+                "player": name or pid,
+                "pos": pos,
+                "team": team,
+                "salary": sal,
+                "pts": pts,
+                "franchise_id": row["franchise_id"],
+                "ppk": _ppk(pts, sal) if sal else None,
+            }
         )
 
-    out[salary_col] = _coerce_numeric(out[salary_col])
-    out[pcol] = _coerce_numeric(out[pcol])
+    # Filter to those with some salary info when ranking value; still include unknowns in tails if needed
+    with_ppk = [x for x in enriched if x.get("ppk") is not None]
+    without_ppk = [x for x in enriched if x.get("ppk") is None]
 
-    denom = (out[salary_col] / 1000.0).replace(0, np.nan)
-    out[points_per_k_col] = out[pcol] / denom
-    return out
+    # Rank values/busts
+    top_values = sorted(with_ppk, key=lambda r: (r["ppk"], r["pts"]), reverse=True)[:10]
+    top_busts = sorted(with_ppk, key=lambda r: (r["ppk"], -r["pts"]))[:10]
 
-# ---------- leaderboards ----------
+    # Position buckets (best per position by P/$1K)
+    pos_buckets: Dict[str, List[Dict[str, Any]]] = {}
+    for r in with_ppk:
+        pos = (r.get("pos") or "UNK").upper()
+        pos_buckets.setdefault(pos, []).append(r)
+    for pos, rows in list(pos_buckets.items()):
+        pos_buckets[pos] = sorted(rows, key=lambda r: r["ppk"], reverse=True)[:10]
 
-def _aggregate_by(
-    df: pd.DataFrame,
-    group_cols: List[str],
-    *,
-    proj_col: Optional[str],
-    points_per_k_col: str,
-) -> pd.DataFrame:
-    """
-    Aggregate by group_cols into summary stats and return a tidy dataframe
-    with friendly labels (Avg_Pts_per_$K, etc.). If group_cols are empty,
-    produce a single 'All' group.
-    """
-    if not group_cols:
-        df = df.copy()
-        df["All"] = "All"
-        group_cols = ["All"]
-
-    # ensure value columns exist
-    df = compute_value(df, proj_col=proj_col, salary_col="Salary", points_per_k_col=points_per_k_col)
-
-    # figure out projection column name now present
-    try:
-        pcol = _pick_proj_col(df, explicit=proj_col)
-    except KeyError:
-        pcol = "ProjectedPoints"
-
-    g = df.groupby(group_cols, dropna=False)
-    agg_map = {
-        "Salary": ["count", "mean", "median"],
-        pcol: ["mean", "median", "max"],
-        points_per_k_col: ["mean"],
+    return {
+        "top_values": top_values,
+        "top_busts": top_busts,
+        "by_pos": pos_buckets,
+        "samples": {
+            "with_ppk": len(with_ppk),
+            "without_ppk": len(without_ppk),
+            "total_starters": len(enriched),
+        },
     }
-    agg = g.agg(agg_map)
-    agg.columns = ["_".join([c for c in map(str, col) if c and c != "<lambda>"]).strip("_") for col in agg.columns]
-    agg = agg.reset_index()
-
-    rename_map = {
-        "Salary_count": "Count",
-        "Salary_mean": "Avg_Salary",
-        "Salary_median": "Median_Salary",
-        f"{pcol}_mean": "Avg_Proj",
-        f"{pcol}_median": "Median_Proj",
-        f"{pcol}_max": "Max_Proj",
-        f"{points_per_k_col}_mean": "Avg_Pts_per_$K",
-    }
-    agg = agg.rename(columns=rename_map)
-
-    # Order columns
-    desired = group_cols + [
-        "Count",
-        "Avg_Salary",
-        "Median_Salary",
-        "Avg_Proj",
-        "Median_Proj",
-        "Max_Proj",
-        "Avg_Pts_per_$K",
-    ]
-    existing = [c for c in desired if c in agg.columns]
-    remainder = [c for c in agg.columns if c not in existing]
-    agg = agg[existing + remainder]
-    return agg
-
-def leaderboard_values(
-    df: pd.DataFrame,
-    *,
-    groupby: Iterable[str] = ("Pos",),
-    proj_col: Optional[str] = None,
-    points_per_k_col: str = "Pts_per_K",
-    top_n: int = 10,
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Return four leaderboards expected by main.py:
-      (best_ind, worst_ind, team_best, team_worst)
-
-    - Robust to missing columns:
-        * If 'Pos' missing, uses a synthetic 'ALL' Pos.
-        * If 'Team' missing, uses synthetic 'FA'.
-    - Robust to empty frames: returns empty but correctly-shaped outputs.
-    """
-    # If df is empty or only Salary exists, still compute_value to add Pts_per_K/ProjectedPoints
-    base = compute_value(df if df is not None else pd.DataFrame(), proj_col=proj_col)
-
-    # Ensure standard columns exist for ranking/selection
-    name_col = _pick_name_col(base)
-    sel_cols = []
-    if name_col:
-        sel_cols.append(name_col)
-    base = _ensure_cols(base, [
-        ("Team", "FA"),
-        ("Pos", "ALL"),
-        ("Salary", np.nan),
-        ("ProjectedPoints", np.nan),   # may already exist; harmless
-        ("Pts_per_K", np.nan),
-    ])
-
-    # --- best/worst individuals by value ---
-    sortable = base.copy()
-    # safer replace inf with NaN to avoid weird ordering
-    sortable["Pts_per_K"] = pd.to_numeric(sortable["Pts_per_K"], errors="coerce").replace([np.inf, -np.inf], np.nan)
-
-    cols_for_ind = (sel_cols + ["Team", "Pos", "Salary", "ProjectedPoints", "Pts_per_K"])
-    cols_for_ind = [c for c in cols_for_ind if c in sortable.columns]
-
-    best_ind = (
-        sortable.sort_values("Pts_per_K", ascending=False, na_position="last")
-        .head(top_n)[cols_for_ind]
-        .reset_index(drop=True)
-    )
-    worst_ind = (
-        sortable.sort_values("Pts_per_K", ascending=True, na_position="last")
-        .head(top_n)[cols_for_ind]
-        .reset_index(drop=True)
-    )
-
-    # --- team aggregates (best/worst) ---
-    team_agg = _aggregate_by(base, ["Team"], proj_col=proj_col, points_per_k_col=points_per_k_col)
-    # when Team was synthetic 'FA' for all rows, this still returns one-row summary
-    team_best = team_agg.sort_values("Avg_Pts_per_$K", ascending=False, na_position="last").head(top_n).reset_index(drop=True)
-    team_worst = team_agg.sort_values("Avg_Pts_per_$K", ascending=True,  na_position="last").head(top_n).reset_index(drop=True)
-
-    # Ensure all four outputs exist even if df was empty
-    for out in (best_ind, worst_ind, team_best, team_worst):
-        # nothing to do; already DataFrames
-        pass
-
-    return best_ind, worst_ind, team_best, team_worst
-
-# ---------- optional: intra-group ranking ----------
-
-def rank_value_within_group(
-    df: pd.DataFrame,
-    *,
-    groupby: Iterable[str] = ("Pos",),
-    value_col: str = "Pts_per_K",
-    rank_col: str = "Value_Rank",
-    ascending: bool = False,
-) -> pd.DataFrame:
-    if value_col not in df.columns:
-        raise KeyError(f"Missing '{value_col}'. Did you call compute_value()?")
-
-    if not isinstance(groupby, (list, tuple)):
-        groupby = list(groupby)
-
-    out = df.copy()
-    out[rank_col] = (
-        out.groupby(list(groupby), dropna=False)[value_col]
-        .rank(method="dense", ascending=ascending)
-        .astype("Int64")
-    )
-    return out
