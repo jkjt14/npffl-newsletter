@@ -3,7 +3,7 @@ python-dateutil
 requests
 beautifulsoup4
 lxml
+rapidfuzz
 jinja2
 markdown
-tenacity
-PyYAML>=6.0
+PyYAML
