@@ -7,7 +7,7 @@ from .load_salary import load_latest_salary
 from .value_engine import attach_salary, compute_value, leaderboard_values
 from .roastbook import roast_value, roast_bust
 from .newsletter import render_newsletter
-from .post_outputs import post_slack, mailchimp_send
+from .post_outputs import post_to_slack as post_slack, mailchimp_send
 
 def read_config():
     with open("config.yaml", "r", encoding="utf-8") as f:
