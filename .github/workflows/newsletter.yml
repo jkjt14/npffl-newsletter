@@ -8,7 +8,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT)
+    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
 
 jobs:
   build-newsletter:
@@ -34,7 +34,7 @@ jobs:
         env:
           MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
           MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
-          MFL_API_KEY: ${{ secrets.MFL_API_KEY }}
+          MFL_API_KEY:  ${{ secrets.MFL_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           echo "MFL_USERNAME=${MFL_USERNAME}" >> $GITHUB_ENV
@@ -47,3 +47,11 @@ jobs:
           WEEK: ${{ github.event.inputs.week }}
         run: |
           python -m src.main --week "${WEEK}"
+
+      - name: Upload newsletter artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NPFFL-Newsletter
+          path: build/**
+          if-no-files-found: warn
+          retention-days: 14
