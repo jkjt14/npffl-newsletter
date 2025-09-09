@@ -7,7 +7,6 @@ import markdown as mdlib
 
 
 def _as_list(x):
-    # Normalize a single dict to [dict], or pass through list, else []
     if isinstance(x, list):
         return x
     if isinstance(x, dict):
@@ -38,11 +37,6 @@ def _bullet(items: List[str]) -> str:
 
 
 def _render_standings(standings: Any) -> str:
-    """
-    standings is expected to be a list of dicts with:
-      id, fname (team name), pf (points for), vp (victory points)
-    JSON sample matched from your artifact.
-    """
     rows: List[Tuple[str, float, float]] = []
     for row in _as_list(standings):
         name = row.get("fname") or row.get("name") or row.get("id") or "Unknown"
@@ -55,17 +49,12 @@ def _render_standings(standings: Any) -> str:
         except Exception:
             vp = 0.0
         rows.append((name, pf, vp))
-
-    # Sort by VP, then PF desc — tweak to your league’s preference
     rows.sort(key=lambda t: (t[2], t[1]), reverse=True)
 
     out = _h2("Standings (Week-to-date)")
     if not rows:
         return out + _p("_No standings data available._")
-
-    # Compact table (no long prose in tables)
-    out += "Team | PF | VP\n"
-    out += "---|---:|---:\n"
+    out += "Team | PF | VP\n---|---:|---:\n"
     for name, pf, vp in rows:
         out += f"{name} | {pf:.2f} | {vp:g}\n"
     out += "\n"
@@ -73,19 +62,13 @@ def _render_standings(standings: Any) -> str:
 
 
 def _render_weekly_scores(weekly_results: Any) -> str:
-    """
-    weekly_results structure from artifact:
-      {"weeklyResults": {"franchise": [ { "id": "...", "score": "96.2", "player":[...], ... }, ...]}}
-    """
     if not isinstance(weekly_results, dict):
         return _h2("Weekly Scores") + _p("_No weekly results found._")
-
     wr = weekly_results.get("weeklyResults") or {}
     franchises = _as_list(wr.get("franchise"))
     if not franchises:
         return _h2("Weekly Scores") + _p("_No weekly results found._")
 
-    # Build list of (team_id, score) plus optional best performers from players
     team_rows: List[Tuple[str, float]] = []
     for f in franchises:
         team_id = f.get("id") or "unknown"
@@ -94,19 +77,14 @@ def _render_weekly_scores(weekly_results: Any) -> str:
         except Exception:
             score = 0.0
         team_rows.append((team_id, score))
-
-    # Sort by score desc
     team_rows.sort(key=lambda t: t[1], reverse=True)
 
     out = _h2("Weekly Scores (Starter Lineups)")
-    out += "Team ID | Score\n"
-    out += "---|---:\n"
+    out += "Team ID | Score\n---|---:\n"
     for tid, sc in team_rows:
         out += f"{tid} | {sc:.2f}\n"
     out += "\n"
 
-    # Optional: top performers per team (from 'player' lists)
-    # Keep it lightweight for now: list each team’s top scoring starter
     bullets: List[str] = []
     for f in franchises:
         tid = f.get("id") or "unknown"
@@ -125,110 +103,118 @@ def _render_weekly_scores(weekly_results: Any) -> str:
     if bullets:
         out += _h3("Team Highlights")
         out += _bullet(bullets)
+    return out
 
+
+def _render_values(values: Dict[str, Any]) -> str:
+    if not values:
+        return ""
+    top_vals = values.get("top_values") or []
+    top_busts = values.get("top_busts") or []
+
+    def _mk_rows(items):
+        out = "Player | Pts | Salary | P/$1K | Team | Pos | Manager\n---|---:|---:|---:|---|---|---\n"
+        for it in items:
+            who = str(it.get("player") or "Unknown")
+            pts = it.get("pts")
+            sal = it.get("salary")
+            ppk = it.get("ppk")
+            team = it.get("team") or ""
+            pos = it.get("pos") or ""
+            mgr = it.get("franchise_id") or ""
+            pts_s = f"{pts:.2f}" if isinstance(pts, (int, float)) else str(pts)
+            sal_s = f"${int(sal):,}" if isinstance(sal, (int, float)) else "-"
+            ppk_s = f"{ppk:.3f}" if isinstance(ppk, (int, float)) else "-"
+            out += f"{who} | {pts_s} | {sal_s} | {ppk_s} | {team} | {pos} | {mgr}\n"
+        out += "\n"
+        return out
+
+    out = _h2("Top Values")
+    out += _mk_rows(top_vals) if top_vals else _p("_No value data available._")
+    out += _h2("Top Busts")
+    out += _mk_rows(top_busts) if top_busts else _p("_No bust data available._")
+
+    # Optional per-position highlights (if present)
+    by_pos = values.get("by_pos") or {}
+    if by_pos:
+        out += _h2("Best Values by Position")
+        for pos, rows in by_pos.items():
+            out += _h3(pos)
+            out += _mk_rows(rows[:5])
     return out
 
 
 def _render_pool_confidence(pool_nfl: Any, week: int) -> str:
-    """
-    pool JSON shape from artifact shows:
-      {"poolPicks":{"use_weights":"Confidence","franchise":[
-          {"id":"0001","week":[{"week":"1","game":[{"rank":"16","pick":"PHI","matchup":"DAL,PHI"}, ...]}, ...]},
-          ...
-      ]}}
-    We’ll render for the given week: show each franchise’s top 3 ranks & picks.
-    """
     if not isinstance(pool_nfl, dict):
         return ""
-
     picks_root = pool_nfl.get("poolPicks")
     if not isinstance(picks_root, dict):
         return ""
-
     franchises = _as_list(picks_root.get("franchise"))
     if not franchises:
         return ""
 
     out = _h2("Confidence Pool — Highlights")
     bullets: List[str] = []
-
     for fr in franchises:
         fid = fr.get("id", "unknown")
-        week_list = _as_list(fr.get("week"))
-        # find matching week entry
         wnode = None
-        for w in week_list:
+        for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
                 wnode = w
                 break
         if not wnode:
             continue
         games = _as_list(wnode.get("game"))
-        # pick top-3 ranks for the week
         try:
-            sorted_games = sorted(
-                games,
-                key=lambda g: int(g.get("rank") or 0),
-                reverse=True
-            )
+            sorted_games = sorted(games, key=lambda g: int(g.get("rank") or 0), reverse=True)
         except Exception:
             sorted_games = games
         top_n = sorted_games[:3]
         short = ", ".join([f"{g.get('pick','?')}({g.get('rank','-')})" for g in top_n]) if top_n else "—"
         bullets.append(f"**{fid}** — {short}")
-
     if bullets:
         out += _bullet(bullets)
     else:
         out += _p("_No confidence picks available for this week._")
-
     return out
 
 
 def _render_survivor(survivor_pool: Any, week: int) -> str:
-    """
-    survivor JSON shape from artifact shows:
-      {"survivorPool":{"franchise":[{"id":"0001","week":[{"week":"1","pick":"ARI"}, ...]}, ...]}}
-    """
     if not isinstance(survivor_pool, dict):
         return ""
-
     sp = survivor_pool.get("survivorPool")
     if not isinstance(sp, dict):
         return ""
-
     franchises = _as_list(sp.get("franchise"))
     if not franchises:
         return ""
 
     out = _h2("Survivor Pool — Week Picks")
-    rows: List[Tuple[str, str]] = []
+    out += "Team ID | Pick\n---|---\n"
     for fr in franchises:
         fid = fr.get("id", "unknown")
-        week_list = _as_list(fr.get("week"))
-        pick = None
-        for w in week_list:
+        pick = "—"
+        for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
-                pick = w.get("pick")
+                pick = w.get("pick") or "—"
                 break
-        rows.append((fid, pick or "—"))
+        out += f"{fid} | {pick}\n"
+    out += "\n"
+    return out
 
-    # Compact table
-    out += "Team ID | Pick\n"
-    out += "---|---\n"
-    for fid, pk in rows:
-        out += f"{fid} | {pk}\n"
+
+def _render_roasts(roasts: Dict[str, Any]) -> str:
+    if not roasts:
+        return ""
+    out = _h2("Trophies & Roasts")
+    for k, v in roasts.items():
+        out += f"- **{k.replace('_',' ').title()}**: {v}\n"
     out += "\n"
     return out
 
 
 def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> str:
-    """
-    Generate Markdown + (optional) HTML.
-    Writes:
-      build/NPFFL_Week_XX.md
-      build/NPFFL_Week_XX.html (if make_html: true)
-    """
     nl = context.get("newsletter") or {}
     title = nl.get("title", "NPFFL Weekly Roast")
     tz = context.get("timezone", "America/New_York")
@@ -236,40 +222,32 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     make_html = bool(outputs.get("make_html", True))
 
     data = context.get("data") or {}
-    standings = data.get("standings") or []                      # normalized list
-    weekly_results = data.get("week") or {}                      # raw weeklyResults payload holder
-    # If the fetcher stored weekly results at top-level key:
-    if not weekly_results:
-        weekly_results = (data.get("week") or {}).get("weekly_results") or data.get("weekly_results") or {}
-    if not weekly_results:
-        # Some contexts store the entire fetch dict in data["week"]
-        weekly_results = data.get("week", {})
+    standings = data.get("standings") or []
+    weekly_results = data.get("weekly_results") or data.get("week") or {}
+    pool_nfl = data.get("pool_nfl") or (data.get("week") or {}).get("pool_nfl") or {}
+    survivor = data.get("survivor_pool") or (data.get("week") or {}).get("survivor_pool") or {}
+    values = data.get("values") or {}
 
-    pools_conf = data.get("week", {}).get("pool_nfl") or data.get("pool_nfl") or {}
-    survivor = data.get("week", {}).get("survivor_pool") or data.get("survivor_pool") or {}
-
-    # Header
     md = []
     md.append(_h1(title))
     md.append(_p(f"**Week {week} · {tz}**"))
-    md.append(_p("_Generated automatically._"))
 
     # Sections
     md.append(_render_standings(standings))
-    md.append(_render_weekly_scores(data.get('weekly_results') or weekly_results))
-    md.append(_render_pool_confidence(pools_conf, week))
+    md.append(_render_weekly_scores(weekly_results))
+    md.append(_render_values(values))
+    md.append(_render_pool_confidence(pool_nfl, week))
     md.append(_render_survivor(survivor, week))
+    md.append(_render_roasts(context.get("data", {}).get("roasts") or {}))
 
-    md_text = "".join(md)
+    md.append(_p("_Generated automatically._"))
 
-    # Write files
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     md_path = Path(output_dir) / f"NPFFL_Week_{int(week):02d}.md"
-    md_path.write_text(md_text, encoding="utf-8")
+    md_path.write_text("".join(md), encoding="utf-8")
 
     if make_html:
-        html_text = mdlib.markdown(md_text, extensions=["tables", "fenced_code"])
-        html_path = Path(output_dir) / f"NPFFL_Week_{int(week):02d}.html"
-        html_path.write_text(html_text, encoding="utf-8")
+        html_text = mdlib.markdown("".join(md), extensions=["tables", "fenced_code"])
+        (Path(output_dir) / f"NPFFL_Week_{int(week):02d}.html").write_text(html_text, encoding="utf-8")
 
     return str(md_path)
