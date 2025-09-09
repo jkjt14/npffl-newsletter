@@ -75,12 +75,13 @@ def build_auth_from_env() -> Dict[str, Optional[str]]:
     return {
         "username": os.getenv("MFL_USERNAME"),
         "password": os.getenv("MFL_PASSWORD"),
+        # API key is read inside MFLClient
     }
 
 
 def make_mfl_client(cfg: Dict[str, Any], auth: Dict[str, Optional[str]]):
     """
-    Creates an authenticated MFL client (cookie-based). Returns None if unavailable.
+    Creates an authenticated MFL client (API key preferred; cookie fallback). Returns None if unavailable.
     """
     try:
         from .mfl_client import MFLClient  # type: ignore
@@ -144,7 +145,7 @@ def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
         print("NOTE: fetch_week module not available; continuing with empty week data.")
         return {}
 
-    # Try preferred signature
+    # Preferred signature
     fn = getattr(fw, "fetch_week_data", None)
     if callable(fn):
         try:
@@ -251,31 +252,32 @@ def main() -> None:
     # Data pipeline
     salary_df = load_salary_frame(cfg)
     week_data = fetch_week_data(cfg, week, client)
+
+    # --- Debug: quick counts & raw JSON dumps to artifacts (safe placement) ---
+    try:
+        import json
+        dbg_dir = Path(out_dir) / "debug"
+        dbg_dir.mkdir(parents=True, exist_ok=True)
+
+        wr = week_data.get("weekly_results") or {}
+        st_list = week_data.get("standings") or []
+        pool_nfl = week_data.get("pool_nfl") or {}
+        survivor = week_data.get("survivor_pool") or {}
+
+        # Print quick counts to logs
+        print("[debug] weekly_results keys:", list(wr.keys()) if isinstance(wr, dict) else type(wr).__name__)
+        print("[debug] standings_count:", len(st_list) if isinstance(st_list, list) else 0)
+
+        # Write raw JSON so we can inspect from Artifacts
+        (dbg_dir / f"weekly_results_w{week}.json").write_text(json.dumps(wr, indent=2), encoding="utf-8")
+        (dbg_dir / "standings.json").write_text(json.dumps(st_list, indent=2), encoding="utf-8")
+        (dbg_dir / "pool_nfl.json").write_text(json.dumps(pool_nfl, indent=2), encoding="utf-8")
+        (dbg_dir / "survivor_pool.json").write_text(json.dumps(survivor, indent=2), encoding="utf-8")
+    except Exception as e:
+        print(f"[debug] failed to write debug artifacts: {e}", file=sys.stderr)
+
     value_results = compute_values(salary_df, week_data)
     roasts = build_roasts(cfg, week, value_results, week_data)
-
-    # --- Debug: quick counts & raw JSON dumps to artifacts
-try:
-    import json
-    dbg_dir = Path(out_dir) / "debug"
-    dbg_dir.mkdir(parents=True, exist_ok=True)
-
-    wr = week_data.get("weekly_results") or {}
-    st_list = week_data.get("standings") or []
-    pools = {
-        "pool_nfl": week_data.get("pool_nfl") or {},
-        "survivor_pool": week_data.get("survivor_pool") or {},
-    }
-
-    print("[debug] weekly_results keys:", list(wr.keys()) if isinstance(wr, dict) else type(wr).__name__)
-    print("[debug] standings_count:", len(st_list) if isinstance(st_list, list) else 0)
-
-    (dbg_dir / f"weekly_results_w{week}.json").write_text(json.dumps(wr, indent=2), encoding="utf-8")
-    (dbg_dir / "standings.json").write_text(json.dumps(st_list, indent=2), encoding="utf-8")
-    (dbg_dir / "pool_nfl.json").write_text(json.dumps(pools["pool_nfl"], indent=2), encoding="utf-8")
-    (dbg_dir / "survivor_pool.json").write_text(json.dumps(pools["survivor_pool"], indent=2), encoding="utf-8")
-except Exception as e:
-    print(f"[debug] failed to write debug artifacts: {e}", file=sys.stderr)
 
     # Build rendering context
     context: Dict[str, Any] = {
