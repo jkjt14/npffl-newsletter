@@ -14,3 +14,22 @@ outputs:
   push_to_slack: true
   make_html: true
 trophies: [coupon_clipper, dumpster_fire, galaxy_brain, banana_peel, walk_of_shame]
+franchise_names:
+  "0001": "Freaks"
+  "0002": "GBHDJ14"
+  "0003": "Injury Inc"
+  "0004": "Circle the Wagons"
+  "0005": "Swamp Rabbits"
+  "0006": "Mike's Misery"
+  "0007": "FEMMES"
+  "0008": "The Mayor"
+  "0009": "Taint Toucher"
+  "0010": "FlatFootWorks"
+  "0011": "The Whack Pack"
+  "0012": "Dominators"
+  "0013": "Fast and Ferocious"
+  "0014": "Bubba Fell in the Creek"
+  "0015": "BANG"
+  "0016": "Politically Incorrect"
+  "0017": "Polish Pounders"
+
