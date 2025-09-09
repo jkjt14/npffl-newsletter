@@ -18,12 +18,7 @@ def _as_list(x):
 
 
 def _clean_name(n: str) -> str:
-    """
-    Normalize names like 'Barkley, Saquon!' -> 'Barkley, Saquon'
-    Lowercase for matching; keep 'Last, First' order (salary sheet format).
-    """
     n = (n or "").strip()
-    # Remove trailing punctuation / stray chars often present in sheets
     n = re.sub(r"[!·•]+", "", n)
     n = re.sub(r"\s+", " ", n)
     return n.lower()
@@ -43,13 +38,6 @@ def _safe_float(x, default=0.0) -> float:
 
 
 def _salary_index_from_df(df: "pd.DataFrame") -> Tuple[Dict[str, float], Dict[str, str], Dict[str, str]]:
-    """
-    Build lookup dictionaries:
-      - name -> salary
-      - name -> pos
-      - name -> team
-    Columns present in your sheet: Name, Team, Pos, Salary
-    """
     name_col = "Name"
     pos_col = "Pos"
     team_col = "Team"
@@ -94,21 +82,10 @@ def _resolve_name_for_id(pid: str, players_map: Dict[str, Dict[str, str]]) -> Tu
 
 
 def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Output:
-      {
-        "top_values": [...],
-        "top_busts": [...],
-        "by_pos": {...},
-        "team_efficiency": [{"franchise_id": "0010", "total_pts": 109.0, "total_sal": 52100, "ppk": 2.092}, ...],
-        "top_performers": [{"player":"Allen, Josh","pos":"QB","team":"BUF","pts":35.60,"franchise_id":"0011"}, ...],
-        "samples": {...}
-      }
-    """
     if pd is None:
         return {}
 
-    # Build salary lookups
+    # Salary lookups
     name_to_salary: Dict[str, float] = {}
     name_to_pos: Dict[str, str] = {}
     name_to_team: Dict[str, str] = {}
@@ -121,7 +98,7 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
     wr_root = wr.get("weeklyResults") if isinstance(wr, dict) else None
     franchises = _as_list(wr_root.get("franchise") if isinstance(wr_root, dict) else None)
 
-    enriched_starters: List[Dict[str, Any]] = []  # one row per starter
+    enriched_starters: List[Dict[str, Any]] = []
     for fr in franchises:
         fid = fr.get("id") or "unknown"
         for p in _as_list(fr.get("player")):
@@ -131,9 +108,8 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
             pid = str(p.get("id") or "").strip()
             pts = _safe_float(p.get("score"), 0.0)
 
-            # Resolve name/pos/team from players_map
             nm, pos_hint, team_hint = _resolve_name_for_id(pid, players_map)
-            # Normalize name to join with salary file
+
             salary = None
             pos = pos_hint
             team = team_hint
@@ -156,15 +132,15 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
                 "ppk": _ppk(pts, salary) if (salary is not None) else None,
             })
 
-    # Top performers (by points, regardless of salary)
+    # Top performers
     top_performers = sorted(enriched_starters, key=lambda r: r["pts"], reverse=True)[:10]
 
-    # Value rankings (with known salary)
+    # Value rankings
     with_ppk = [r for r in enriched_starters if r.get("ppk") is not None]
     top_values = sorted(with_ppk, key=lambda r: (r["ppk"], r["pts"]), reverse=True)[:10]
     top_busts = sorted(with_ppk, key=lambda r: (r["ppk"], -r["pts"]))[:10]
 
-    # Per-position top values (P/$1K)
+    # Per-position
     by_pos: Dict[str, List[Dict[str, Any]]] = {}
     for r in with_ppk:
         pos = (r.get("pos") or "UNK").upper()
@@ -172,7 +148,7 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
     for pos, rows in list(by_pos.items()):
         by_pos[pos] = sorted(rows, key=lambda r: r["ppk"], reverse=True)[:10]
 
-    # Team efficiency (sum of starter pts / sum of starter salary)
+    # Team efficiency
     team_stats: Dict[str, Dict[str, float]] = {}
     for r in enriched_starters:
         fid = r["franchise_id"]
