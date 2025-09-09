@@ -6,29 +6,26 @@ import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 import requests
 
 
-# Where we persist the session cookie so subsequent steps can reuse it.
 CACHE_DIR = Path("data/cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 COOKIE_FILE = CACHE_DIR / "mfl_cookie.json"
 
-# You can override these via env if MFL migrates hosts/years.
 DEFAULT_YEAR = int(os.getenv("MFL_YEAR", "2025"))
 DEFAULT_HOST = os.getenv("MFL_HOST", "www46.myfantasyleague.com")
-
-# Respect the registered API Client / unique UA string.
 DEFAULT_UA = os.getenv("MFL_USER_AGENT", "NPFFLNewsletter/1.0 (automation)")
 
 
 class MFLClient:
     """
-    Minimal cookie-based client for MFL.
-    - Performs login with username/password to obtain a cookie
-    - Sends that cookie on subsequent requests
-    - Convenience helper for /export JSON endpoints
+    Minimal MFL client.
+      - If MFL_API_KEY is set, we append APIKEY=... to all /export calls (no cookie needed).
+      - Otherwise, we can log in (USERNAME/PASSWORD) to get a cookie for private endpoints.
+      - Will attempt host discovery to use the league's canonical host.
     """
 
     def __init__(
@@ -44,6 +41,8 @@ class MFLClient:
         self.league_id = str(league_id)
         self.username = username or os.getenv("MFL_USERNAME")
         self.password = password or os.getenv("MFL_PASSWORD")
+        self.api_key = os.getenv("MFL_API_KEY") or None
+
         self.host = host or DEFAULT_HOST
         self.year = int(year or DEFAULT_YEAR)
         self.timeout = timeout
@@ -53,11 +52,22 @@ class MFLClient:
 
         self.cookie_name: Optional[str] = None
         self.cookie_value: Optional[str] = None
+
         self._load_cookie()
 
-        # If we don't have a cookie yet, try to login (username/password recommended)
-        if not self.cookie_value and self.username and self.password:
-            self.login()
+        # If no API key and we don't already have a cookie, try login (fallback)
+        if not self.api_key and not self.cookie_value and self.username and self.password:
+            try:
+                self.login()
+            except Exception:
+                # Not fatal if league allows public/APIKEY access
+                pass
+
+        # Attempt host discovery (non-fatal)
+        try:
+            self.discover_host()
+        except Exception:
+            pass
 
     # ---------- Cookie persistence ----------
 
@@ -70,7 +80,6 @@ class MFLClient:
                     self.cookie_name, self.cookie_value = cn, cv
                     self.session.headers["Cookie"] = f"{cn}={cv}"
             except Exception:
-                # Corrupt cache: ignore
                 pass
 
     def _save_cookie(self, name: str, value: str) -> None:
@@ -81,20 +90,40 @@ class MFLClient:
     # ---------- Auth ----------
 
     def login(self) -> None:
-        """
-        Performs the documented MFL login (XML=1 returns <status cookie_name="" cookie_value="">).
-        """
         url = f"https://api.myfantasyleague.com/{self.year}/login"
         params = {"USERNAME": self.username, "PASSWORD": self.password, "XML": "1"}
         r = self.session.get(url, params=params, timeout=self.timeout)
         r.raise_for_status()
-
-        # Example: <status cookie_name="MFL_USER_ID" cookie_value="..." status="success" />
         m1 = re.search(r'cookie_name="([^"]+)"', r.text)
         m2 = re.search(r'cookie_value="([^"]+)"', r.text)
         if not (m1 and m2):
             raise RuntimeError("MFL login failed; cookie not returned")
         self._save_cookie(m1.group(1), m2.group(1))
+
+    # ---------- Host Discovery ----------
+
+    def discover_host(self) -> None:
+        """
+        Ask the shared API host for league info and update self.host if provided.
+        """
+        url = f"https://api.myfantasyleague.com/{self.year}/export"
+        params = {"TYPE": "league", "L": self.league_id, "JSON": "1"}
+        if self.api_key:
+            params["APIKEY"] = self.api_key
+        r = self.session.get(url, params=params, timeout=self.timeout)
+        r.raise_for_status()
+        info = r.json()
+        league_info = info.get("league") if isinstance(info, dict) else None
+        new_host = None
+        if isinstance(league_info, dict):
+            new_host = league_info.get("host") or league_info.get("url") or league_info.get("league_url")
+            if isinstance(new_host, str) and new_host.startswith("http"):
+                try:
+                    new_host = urlparse(new_host).netloc
+                except Exception:
+                    new_host = None
+        if isinstance(new_host, str) and new_host and new_host != self.host:
+            self.host = new_host
 
     # ---------- Core helpers ----------
 
@@ -103,15 +132,14 @@ class MFLClient:
 
     def get_export(self, request_type: str, **params: Any) -> Dict[str, Any]:
         """
-        Calls /export?TYPE=<>&L=<league>&JSON=1 plus any extra params.
-        Cookie should already be on the session.
+        Calls /export?TYPE=<>&L=<league>&JSON=1 (+ APIKEY if present).
         """
         base = {"TYPE": request_type, "JSON": "1"}
-        # ensure league id is always present unless explicitly overridden
         if "L" not in params and self.league_id:
             params["L"] = self.league_id
+        if self.api_key:
+            params["APIKEY"] = self.api_key
 
-        # light retry on 5xx / network blips
         url = self._url("export")
         last_err = None
         for _ in range(3):
@@ -122,7 +150,6 @@ class MFLClient:
             except Exception as e:
                 last_err = e
                 time.sleep(1.0)
-        # If still failing, raise the last error
         if last_err:
             raise last_err
         return {}
