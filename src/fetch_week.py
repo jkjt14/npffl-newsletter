@@ -1,167 +1,171 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Set
+import os
+from typing import Any, Dict, List, Tuple
+import requests
 
 
-def _as_list(x):
-    if isinstance(x, list):
-        return x
-    if isinstance(x, dict):
-        return [x]
-    return []
+def _get_api_key() -> str:
+    return os.environ.get("MFL_API_KEY", "").strip()
 
 
-def _normalize_standings(st: Any):
-    if not isinstance(st, dict):
-        return []
-    ls = st.get("leagueStandings") or st.get("standings") or {}
-    if isinstance(ls, dict):
-        fr_list = ls.get("franchise") or ls.get("team")
-        if isinstance(fr_list, list):
-            return fr_list
-    if isinstance(st, list):
-        return st
-    return []
+def _base_url(year: int) -> str:
+    # e.g. https://www46.myfantasyleague.com/2025
+    # Your league lives on www46; if MFL redirects, requests will follow.
+    return f"https://www46.myfantasyleague.com/{year}"
 
 
-def _collect_starter_ids(weekly_results: Dict[str, Any]) -> List[str]:
-    ids: Set[str] = set()
-    wr = weekly_results.get("weeklyResults") if isinstance(weekly_results, dict) else None
-    for fr in _as_list(wr.get("franchise") if isinstance(wr, dict) else None):
-        for p in _as_list(fr.get("player")):
-            st = str(p.get("status") or "").lower()
-            if st and st not in ("starter", "s"):
-                continue
-            pid = str(p.get("id") or "").strip()
-            if pid:
-                ids.add(pid)
-    return sorted(ids)
+def _get_json(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    # Ensure JSON=1 is present
+    params = dict(params or {})
+    params["JSON"] = 1
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    try:
+        return r.json()
+    except Exception:
+        return {}
 
 
-def _build_players_map(players_json: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+def _players_map(year: int) -> Dict[str, Dict[str, str]]:
     """
-    players_json shape (common):
-      {"players": {"player": [ {"id":"13589","name":"Allen, Josh","position":"QB","team":"BUF"}, ... ]}}
-    Returns { id: {name, pos, team} }
+    Return {player_id: {name, pos, team}}
     """
+    url = f"{_base_url(year)}/export"
+    params = {"TYPE": "players"}
+    data = _get_json(url, params)
     out: Dict[str, Dict[str, str]] = {}
-    if not isinstance(players_json, dict):
-        return out
-    root = players_json.get("players")
-    if not isinstance(root, dict):
-        return out
-    arr = root.get("player")
-    if isinstance(arr, dict):
-        arr = [arr]
-    if isinstance(arr, list):
-        for p in arr:
+    players = (data or {}).get("players")
+    if isinstance(players, dict):
+        for p in players.get("player", []) or []:
             pid = str(p.get("id") or "").strip()
             if not pid:
                 continue
-            nm = str(p.get("name") or "").strip()
-            pos = str(p.get("position") or "").strip()
-            tm = str(p.get("team") or "").strip()
-            out[pid] = {"name": nm, "pos": pos, "team": tm}
+            out[pid] = {
+                "name": str(p.get("name") or "").strip(),
+                "pos": str(p.get("position") or p.get("pos") or "").strip(),
+                "team": str(p.get("team") or "").strip(),
+            }
     return out
 
 
-def _build_map_from_league(league_json: Any) -> Dict[str, str]:
-    m: Dict[str, str] = {}
-    if not isinstance(league_json, dict):
-        return m
-    lg = league_json.get("league")
-    if not isinstance(lg, dict):
-        return m
-    frs = lg.get("franchises")
-    if isinstance(frs, dict):
-        arr = frs.get("franchise")
-        if isinstance(arr, dict):
-            arr = [arr]
-        if isinstance(arr, list):
-            for f in arr:
-                fid = str(f.get("id") or "").strip()
-                nm = str(f.get("name") or "").strip()
-                if fid and nm:
-                    m[fid] = nm
-    return m
-
-
-def _build_map_from_standings(standings_list: List[dict]) -> Dict[str, str]:
-    m: Dict[str, str] = {}
-    for row in standings_list:
-        fid = str(row.get("id") or "").strip()
-        nm = str(row.get("fname") or row.get("name") or "").strip()
-        if fid and nm:
-            m[fid] = nm
-    return m
-
-
-def fetch_week_data(league_id: str | int, week: int, client) -> Dict[str, Any]:
+def _franchise_names_from_standings(standings_json: Dict[str, Any]) -> Dict[str, str]:
     """
-    Pull core week data and resolve player ids -> names/pos/team for starters.
+    Extract {franchise_id: franchise_name} from leagueStandings payload.
     """
-    out: Dict[str, Any] = {}
-    if client is None:
+    out: Dict[str, str] = {}
+    ls = (standings_json or {}).get("leagueStandings")
+    if not isinstance(ls, dict):
         return out
-
-    # Weekly results (week required)
-    try:
-        out["weekly_results"] = client.get_export("weeklyResults", W=week)
-    except Exception as e:
-        out["weekly_results_error"] = str(e)
-
-    # Standings (season-to-date)
-    standings_list = []
-    try:
-        st = client.get_export("leagueStandings")
-        standings_list = _normalize_standings(st)
-        out["standings"] = standings_list
-    except Exception as e:
-        out["standings_error"] = str(e)
-        out["standings"] = []
-
-    # Player scores for the week (optional)
-    try:
-        out["player_scores"] = client.get_export("playerScores", W=week)
-    except Exception as e:
-        out["player_scores_error"] = str(e)
-
-    # Pools
-    try:
-        out["pool_nfl"] = client.get_export("pool", POOLTYPE="NFL")
-    except Exception as e:
-        out["pool_nfl_error"] = str(e)
-    try:
-        out["survivor_pool"] = client.get_export("survivorPool")
-    except Exception as e:
-        out["survivor_pool_error"] = str(e)
-
-    # League info (for franchise names)
-    try:
-        out["league"] = client.get_export("league")
-    except Exception as e:
-        out["league_error"] = str(e)
-
-    # Franchise map (detected) from league + standings
-    fm = {}
-    fm.update(_build_map_from_league(out.get("league")))
-    fm.update(_build_map_from_standings(standings_list))
-    out["franchise_map_detected"] = fm
-
-    # ---- Resolve starter ids to names via targeted players call ----
-    try:
-        wr = out.get("weekly_results") or {}
-        starter_ids = _collect_starter_ids(wr)
-        players_map: Dict[str, Dict[str, str]] = {}
-        # MFL supports querying specific players: PLAYERS=comma_sep_ids
-        # chunk to be safe (in case of >100 ids)
-        CHUNK = 100
-        for i in range(0, len(starter_ids), CHUNK):
-            chunk = ",".join(starter_ids[i:i+CHUNK])
-            pj = client.get_export("players", PLAYERS=chunk, DETAILS="1")
-            players_map.update(_build_players_map(pj))
-        out["players_map"] = players_map
-    except Exception as e:
-        out["players_map_error"] = str(e)
-
+    for fr in (ls.get("franchise") or []):
+        fid = str(fr.get("id") or "").strip()
+        name = (fr.get("name") or fr.get("fname") or "").strip()
+        if fid:
+            out[fid] = name or fid
     return out
+
+
+def _standings_rows(standings_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Normalize standings into a list of rows: [{id, name, pf, vp}, ...]
+    """
+    rows: List[Dict[str, Any]] = []
+    ls = (standings_json or {}).get("leagueStandings")
+    if not isinstance(ls, dict):
+        return rows
+    for fr in (ls.get("franchise") or []):
+        fid = str(fr.get("id") or "").strip()
+        name = (fr.get("name") or fr.get("fname") or "").strip()
+        try:
+            pf = float(fr.get("pf") or 0.0)
+        except Exception:
+            pf = 0.0
+        try:
+            vp = float(fr.get("vp") or 0.0)
+        except Exception:
+            vp = 0.0
+        rows.append({"id": fid, "name": name, "pf": pf, "vp": vp})
+    return rows
+
+
+def fetch_week_data(client, week: int) -> Dict[str, Any]:
+    """
+    Fetch all week-level inputs needed by the pipeline.
+
+    Returns a dict with:
+      - weekly_results: raw weeklyResults JSON
+      - standings_rows: normalized standings [{id,name,pf,vp}]
+      - pool_nfl: confidence pool JSON (if configured)
+      - survivor_pool: survivor pool JSON (if configured)
+      - players_map: {player_id: {name,pos,team}}
+      - franchise_names: {franchise_id: franchise_name}
+    """
+    # Pull year/league_id off the provided client object when possible.
+    year = getattr(client, "year", None)
+    league_id = getattr(client, "league_id", None)
+
+    if not year or not league_id:
+        raise ValueError("fetch_week_data: client must expose .year and .league_id")
+
+    base = _base_url(year)
+    apikey = _get_api_key()
+
+    # --- Weekly Results (starters & scores) ---
+    weekly_url = f"{base}/export"
+    weekly_params = {
+        "TYPE": "weeklyResults",
+        "L": str(league_id),
+        "W": str(week),
+    }
+    if apikey:
+        weekly_params["APIKEY"] = apikey
+    weekly_results = _get_json(weekly_url, weekly_params)
+
+    # --- Standings (season-to-date, includes VP/PF per franchise) ---
+    standings_url = f"{base}/export"
+    standings_params = {
+        "TYPE": "leagueStandings",
+        "L": str(league_id),
+        "COLUMN_NAMES": "",
+        "ALL": "",
+        "WEB": "",
+    }
+    if apikey:
+        standings_params["APIKEY"] = apikey
+    standings_json = _get_json(standings_url, standings_params)
+    standings_rows = _standings_rows(standings_json)
+    franchise_names = _franchise_names_from_standings(standings_json)
+
+    # --- Confidence Pool (POOLTYPE=NFL for pick’em) ---
+    pool_url = f"{base}/export"
+    pool_params = {
+        "TYPE": "pool",
+        "L": str(league_id),
+        "POOLTYPE": "NFL",
+    }
+    if apikey:
+        pool_params["APIKEY"] = apikey
+    pool_nfl = _get_json(pool_url, pool_params)
+
+    # --- Survivor Pool ---
+    survivor_url = f"{base}/export"
+    survivor_params = {
+        "TYPE": "survivorPool",
+        "L": str(league_id),
+    }
+    if apikey:
+        survivor_params["APIKEY"] = apikey
+    survivor_pool = _get_json(survivor_url, survivor_params)
+
+    # --- Players map (id -> name/pos/team) ---
+    pmap = _players_map(year)
+
+    # Package
+    return {
+        "weekly_results": weekly_results,
+        "standings_rows": standings_rows,
+        "pool_nfl": pool_nfl,
+        "survivor_pool": survivor_pool,
+        "players_map": pmap,
+        "franchise_names": franchise_names,
+    }
