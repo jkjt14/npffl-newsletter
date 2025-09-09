@@ -8,7 +8,12 @@ try:
 except Exception:
     pd = None
 
-from rapidfuzz import process, fuzz
+# rapidfuzz is in requirements; still guard against import errors
+try:
+    from rapidfuzz import process, fuzz
+except Exception:
+    process = None
+    fuzz = None
 
 
 def _as_list(x):
@@ -60,9 +65,8 @@ def _salary_index_from_df(df: "pd.DataFrame"):
         nm = str(r.get("Name") or "").strip()
         if not nm:
             continue
-        # Keep both keys: as-is (likely "Last, First") and a First Last variant for matching
+        # store both "Last, First" and "First Last" keys for easier matching
         key_exact = _clean_key(nm)
-        # Build First Last if "Last, First"
         if "," in nm:
             last, first = [t.strip() for t in nm.split(",", 1)]
             key_fl = _clean_key(f"{first} {last}")
@@ -70,9 +74,10 @@ def _salary_index_from_df(df: "pd.DataFrame"):
             key_fl = key_exact
 
         sal = r.get("Salary")
-        if sal is not None and pd.notna(sal):
-            name_to_salary[key_exact] = float(sal)
-            name_to_salary.setdefault(key_fl, float(sal))
+        if sal is not None and (not pd or pd.isna(sal) is False):
+            sal_val = float(sal)
+            name_to_salary[key_exact] = sal_val
+            name_to_salary.setdefault(key_fl, sal_val)
 
         pos = str(r.get("Pos") or "").strip()
         team = str(r.get("Team") or "").strip()
@@ -86,16 +91,54 @@ def _salary_index_from_df(df: "pd.DataFrame"):
     return name_to_salary, name_to_pos, name_to_team
 
 
-def _fuzzy_lookup(name_key: str, table: Dict[str, float], cache: Dict[str, float], score_cutoff: int = 91) -> float | None:
+def _fuzzy_lookup(name_key: str, table: Dict[str, float], cache: Dict[str, float],
+                  primary_cutoff: int = 91, secondary_cutoff: int = 86) -> float | None:
+    """
+    Defensive fuzzy finder:
+      1) exact key in table
+      2) rapidfuzz token_sort_ratio with cutoff
+      3) token_set_ratio a bit looser
+    Returns None if no decent match.
+    """
+    if not name_key:
+        return None
     if name_key in table:
         return table[name_key]
-    # fuzzy match using rapidfuzz
-    if not table:
+
+    if not process or not fuzz or not table:
         return None
-    cand, score, _ = process.extractOne(name_key, table.keys(), scorer=fuzz.token_sort_ratio, score_cutoff=score_cutoff)
-    if cand:
+
+    # Primary attempt
+    try:
+        res = process.extractOne(
+            name_key, table.keys(),
+            scorer=fuzz.token_sort_ratio,
+            score_cutoff=primary_cutoff
+        )
+    except Exception:
+        res = None
+
+    if res:
+        # res is (candidate, score, idx) in rapidfuzz >= 2.0
+        cand = res[0]
         cache[name_key] = table[cand]
         return table[cand]
+
+    # Secondary attempt (looser & different scorer)
+    try:
+        res2 = process.extractOne(
+            name_key, table.keys(),
+            scorer=fuzz.token_set_ratio,
+            score_cutoff=secondary_cutoff
+        )
+    except Exception:
+        res2 = None
+
+    if res2:
+        cand2 = res2[0]
+        cache[name_key] = table[cand2]
+        return table[cand2]
+
     return None
 
 
@@ -130,11 +173,14 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
 
             # Build lookup keys
             key_fl = _clean_key(display_name)              # "first last"
-            key_raw = _clean_key(pm_name)                  # may be "last, first"
-            # Try exact/fuzzy salary
-            salary = name_to_salary.get(key_fl)
-            if salary is None:
-                salary = name_to_salary.get(key_raw)
+            key_raw = _clean_key(pm_name)                  # might be "last, first"
+
+            # salary match: exact → fuzzy (twice) on both keys
+            salary = None
+            for key in (key_fl, key_raw):
+                salary = name_to_salary.get(key)
+                if salary is not None:
+                    break
             if salary is None:
                 salary = _fuzzy_lookup(key_fl, name_to_salary, fuzzy_cache)
             if salary is None and key_raw != key_fl:
