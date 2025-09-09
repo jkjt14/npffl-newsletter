@@ -69,7 +69,7 @@ def _render_weekly_scores(weekly_results: Any, fmap: Dict[str, str]) -> str:
     return out
 
 
-def _render_top_performers(values: Dict[str, Any]) -> str:
+def _render_top_performers(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
     tp = values.get("top_performers") or []
     out = _h2("Top Performers")
     if not tp:
@@ -79,8 +79,8 @@ def _render_top_performers(values: Dict[str, Any]) -> str:
         nm = r.get("player") or "Unknown"
         pos = r.get("pos") or ""
         tm = r.get("team") or ""
-        pts = r.get("pts")
-        mgr = r.get("franchise_id") or ""
+        pts = r.get("pts") or 0
+        mgr = _name_for(r.get("franchise_id") or "", fmap)
         out += f"{nm} | {pos} | {tm} | {pts:.2f} | {mgr}\n"
     out += "\n"
     return out
@@ -96,14 +96,15 @@ def _render_values(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
         out = "Player | Pts | Salary | P/$1K | Team | Pos | Manager\n---|---:|---:|---:|---|---|---\n"
         for it in items:
             who = str(it.get("player") or "Unknown")
-            pts = it.get("pts")
+            pts = it.get("pts") or 0
             sal = it.get("salary")
             ppk = it.get("ppk")
             tm = it.get("team") or ""
             pos = it.get("pos") or ""
             mgr = _name_for(it.get("franchise_id") or "", fmap)
-            out += f"{who} | {pts:.2f} | {('$'+format(int(sal),',') if isinstance(sal,(int,float)) else '-')}"
-            out += f" | {(f'{ppk:.3f}' if isinstance(ppk,(int,float)) else '-')} | {tm} | {pos} | {mgr}\n"
+            sal_s = f"${int(sal):,}" if isinstance(sal, (int, float)) else "-"
+            ppk_s = f"{ppk:.3f}" if isinstance(ppk, (int, float)) else "-"
+            out += f"{who} | {pts:.2f} | {sal_s} | {ppk_s} | {tm} | {pos} | {mgr}\n"
         out += "\n"
         return out
 
@@ -141,7 +142,6 @@ def _render_pool_confidence(pool_nfl: Any, week: int, fmap: Dict[str, str]) -> s
     if not franchises:
         return ""
     out = _h2("Confidence Pick’em — Spotlight")
-    # Show top-3 ranks per franchise
     bullets: List[str] = []
     for fr in franchises:
         fid = fr.get("id","unknown")
@@ -150,7 +150,7 @@ def _render_pool_confidence(pool_nfl: Any, week: int, fmap: Dict[str, str]) -> s
         for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
                 wnode = w; break
-        if not wnode: 
+        if not wnode:
             continue
         games = _as_list(wnode.get("game"))
         try:
@@ -190,11 +190,9 @@ def _render_roasts(roasts: Dict[str, Any]) -> str:
     if not roasts:
         return ""
     out = _h2("Trophies & Roasts")
-    # Named trophies first
     for key in ("coupon_clipper","dumpster_fire","galaxy_brain","banana_peel","walk_of_shame"):
         if key in roasts:
             out += f"- **{key.replace('_',' ').title()}**: {roasts[key]}\n"
-    # Flavor blurbs
     lines = roasts.get("lines") or []
     if lines:
         out += "\n" + _h3("League Flavor")
@@ -223,10 +221,9 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     md.append(_h1(title))
     md.append(_p(f"**Week {week} · {tz}**"))
 
-    # Core sections
     md.append(_render_standings(standings, fmap))
     md.append(_render_weekly_scores(weekly_results, fmap))
-    md.append(_render_top_performers(values))
+    md.append(_render_top_performers(values, fmap))
     md.append(_render_values(values, fmap))
     md.append(_render_power_rankings(values, fmap))
     md.append(_render_pool_confidence(pool_nfl, week, fmap))
