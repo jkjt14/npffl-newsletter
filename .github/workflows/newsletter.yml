@@ -31,7 +31,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # ✅ All secrets are defined in the YAML env block (NOT in the run block)
       - name: Configure env
         env:
           MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
@@ -46,7 +45,6 @@ jobs:
           echo "MFL_API_KEY=${MFL_API_KEY}"   >> "$GITHUB_ENV"
           echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> "$GITHUB_ENV"
           echo "THE_ODDS_API_KEY=${THE_ODDS_API_KEY}" >> "$GITHUB_ENV"
-          echo "[env] Exported env to GITHUB_ENV. THE_ODDS_API_KEY set: $([[ -n "${THE_ODDS_API_KEY:-}" ]] && echo yes || echo no)"
 
       - name: Run newsletter
         env:
@@ -55,5 +53,33 @@ jobs:
           set -euo pipefail
           mkdir -p build
           python -m src.main --week "${WEEK:-}"
-          echo "[out] Listing build/"
-          ls -lah build
+          echo "[out] Contents of build/:"
+          ls -lah build || true
+
+      # derive a week label for artifact naming if none provided
+      - name: Discover week label
+        run: |
+          set -euo pipefail
+          WEEK_IN="${{ github.event.inputs.week }}"
+          if [ -n "$WEEK_IN" ]; then
+            WLBL=$(printf "%02d" "$WEEK_IN")
+          else
+            F=$(ls -1 build/NPFFL_Week_*.md 2>/dev/null | sort | tail -n1 || true)
+            if [ -n "$F" ]; then
+              WLBL=$(basename "$F" | sed -E 's/NPFFL_Week_([0-9]{2}).*/\1/')
+            else
+              WLBL="unknown"
+            fi
+          fi
+          echo "WEEK_LABEL=$WLBL" >> "$GITHUB_ENV"
+          echo "[artifact] WEEK_LABEL=$WLBL"
+
+      - name: Upload newsletter artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NPFFL_Week_${{ env.WEEK_LABEL }}
+          path: |
+            build/*.md
+            build/*.html
+          if-no-files-found: error
+          retention-days: 30
