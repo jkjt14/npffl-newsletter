@@ -8,7 +8,6 @@ try:
 except Exception:
     pd = None
 
-# rapidfuzz is in requirements; still guard against import errors
 try:
     from rapidfuzz import process, fuzz
 except Exception:
@@ -17,10 +16,8 @@ except Exception:
 
 
 def _as_list(x):
-    if isinstance(x, list):
-        return x
-    if isinstance(x, dict):
-        return [x]
+    if isinstance(x, list): return x
+    if isinstance(x, dict): return [x]
     return []
 
 
@@ -32,8 +29,7 @@ def _clean_key(n: str) -> str:
 
 
 def _first_last(name: str) -> str:
-    if not name:
-        return name
+    if not name: return name
     parts = [p.strip() for p in name.split(",")]
     if len(parts) == 2:
         last, first = parts[0], parts[1]
@@ -48,24 +44,30 @@ def _ppk(points: float, salary: float):
 
 
 def _safe_float(x, default=0.0) -> float:
-    try:
-        return float(x)
-    except Exception:
-        return float(default)
+    try: return float(x)
+    except Exception: return float(default)
 
 
 def _salary_index_from_df(df: "pd.DataFrame"):
     if df is None or getattr(df, "empty", True):
         return {}, {}, {}
-    name_to_salary, name_to_pos, name_to_team = {}, {}, {}
+
+    # Accept common column names (Name/Player, Pos, Position)
+    cols = {c.lower(): c for c in df.columns}
+    name_col = cols.get("name") or cols.get("player") or "Name"
+    pos_col = cols.get("pos") or cols.get("position") or "Pos"
+    team_col = cols.get("team") or "Team"
+    sal_col = cols.get("salary") or "Salary"
+
     df2 = df.copy()
-    if "Salary" in df2.columns:
-        df2["Salary"] = pd.to_numeric(df2["Salary"], errors="coerce")
+    if sal_col in df2.columns:
+        df2[sal_col] = pd.to_numeric(df2[sal_col], errors="coerce")
+
+    name_to_salary, name_to_pos, name_to_team = {}, {}, {}
+
     for _, r in df2.iterrows():
-        nm = str(r.get("Name") or "").strip()
-        if not nm:
-            continue
-        # store both "Last, First" and "First Last" keys for easier matching
+        nm = str(r.get(name_col) or "").strip()
+        if not nm: continue
         key_exact = _clean_key(nm)
         if "," in nm:
             last, first = [t.strip() for t in nm.split(",", 1)]
@@ -73,17 +75,18 @@ def _salary_index_from_df(df: "pd.DataFrame"):
         else:
             key_fl = key_exact
 
-        sal = r.get("Salary")
+        sal = r.get(sal_col)
         if sal is not None and (not pd or pd.isna(sal) is False):
             sal_val = float(sal)
             name_to_salary[key_exact] = sal_val
             name_to_salary.setdefault(key_fl, sal_val)
 
-        pos = str(r.get("Pos") or "").strip()
-        team = str(r.get("Team") or "").strip()
+        pos = str(r.get(pos_col) or "").strip()
         if pos:
             name_to_pos[key_exact] = pos
             name_to_pos.setdefault(key_fl, pos)
+
+        team = str(r.get(team_col) or "").strip()
         if team:
             name_to_team[key_exact] = team
             name_to_team.setdefault(key_fl, team)
@@ -91,54 +94,61 @@ def _salary_index_from_df(df: "pd.DataFrame"):
     return name_to_salary, name_to_pos, name_to_team
 
 
+def _rf_extract(name_key: str, keys, scorer, cutoff: int):
+    if not process or not scorer: return None
+    try:
+        return process.extractOne(name_key, keys, scorer=scorer, score_cutoff=cutoff)
+    except Exception:
+        return None
+
+
 def _fuzzy_lookup(name_key: str, table: Dict[str, float], cache: Dict[str, float],
                   primary_cutoff: int = 91, secondary_cutoff: int = 86) -> float | None:
-    """
-    Defensive fuzzy finder:
-      1) exact key in table
-      2) rapidfuzz token_sort_ratio with cutoff
-      3) token_set_ratio a bit looser
-    Returns None if no decent match.
-    """
-    if not name_key:
+    if not name_key or not table:
         return None
     if name_key in table:
         return table[name_key]
 
-    if not process or not fuzz or not table:
-        return None
-
-    # Primary attempt
-    try:
-        res = process.extractOne(
-            name_key, table.keys(),
-            scorer=fuzz.token_sort_ratio,
-            score_cutoff=primary_cutoff
-        )
-    except Exception:
-        res = None
-
+    res = _rf_extract(name_key, table.keys(), fuzz.token_sort_ratio if fuzz else None, primary_cutoff)
     if res:
-        # res is (candidate, score, idx) in rapidfuzz >= 2.0
         cand = res[0]
         cache[name_key] = table[cand]
         return table[cand]
 
-    # Secondary attempt (looser & different scorer)
-    try:
-        res2 = process.extractOne(
-            name_key, table.keys(),
-            scorer=fuzz.token_set_ratio,
-            score_cutoff=secondary_cutoff
-        )
-    except Exception:
-        res2 = None
-
+    res2 = _rf_extract(name_key, table.keys(), fuzz.token_set_ratio if fuzz else None, secondary_cutoff)
     if res2:
         cand2 = res2[0]
         cache[name_key] = table[cand2]
         return table[cand2]
+    return None
 
+
+def _subset_then_fuzzy(name_key: str, pos: str, team: str,
+                       name_to_salary: Dict[str, float],
+                       name_to_pos: Dict[str, str],
+                       name_to_team: Dict[str, str]) -> float | None:
+    """
+    If global fuzzy failed, try to constrain to rows with same pos/team
+    and fuzzy match within that subset.
+    """
+    if not process or not fuzz or not name_to_salary:
+        return None
+    pos = (pos or "").upper()
+    team = (team or "").upper()
+
+    subset_keys = []
+    for k in name_to_salary.keys():
+        kp = (name_to_pos.get(k) or "").upper()
+        kt = (name_to_team.get(k) or "").upper()
+        if (pos and kp == pos) or (team and kt == team):
+            subset_keys.append(k)
+    if not subset_keys:
+        return None
+
+    res = _rf_extract(name_key, subset_keys, fuzz.token_sort_ratio, 80)
+    if res: return name_to_salary[res[0]]
+    res2 = _rf_extract(name_key, subset_keys, fuzz.token_set_ratio, 75)
+    if res2: return name_to_salary[res2[0]]
     return None
 
 
@@ -153,46 +163,50 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
     wr_root = wr.get("weeklyResults") if isinstance(wr, dict) else None
     franchises = _as_list(wr_root.get("franchise") if isinstance(wr_root, dict) else None)
 
-    # For fuzzy caching
     fuzzy_cache: Dict[str, float] = {}
-
     starters: List[Dict[str, Any]] = []
+
     for fr in franchises:
         fid = fr.get("id") or "unknown"
         for p in _as_list(fr.get("player")):
             st = str(p.get("status") or "").lower()
             if st and st not in ("starter", "s"):
                 continue
+
             pid = str(p.get("id") or "").strip()
             pts = _safe_float(p.get("score"), 0.0)
 
-            # Resolve to First Last for display
             pm = players_map.get(pid) or {}
             pm_name = pm.get("name") or (p.get("name") or "")
-            display_name = _first_last(pm_name)
+            display = _first_last(pm_name) if pm_name else pid
 
-            # Build lookup keys
-            key_fl = _clean_key(display_name)              # "first last"
-            key_raw = _clean_key(pm_name)                  # might be "last, first"
+            # For salary matching we try both keys
+            key_fl = _clean_key(display)           # first last
+            key_raw = _clean_key(pm_name)          # possibly last, first
 
-            # salary match: exact → fuzzy (twice) on both keys
+            # Pos/Team from players_map is most reliable
+            pos = pm.get("pos") or p.get("position")
+            team = pm.get("team") or p.get("team")
+
             salary = None
-            for key in (key_fl, key_raw):
-                salary = name_to_salary.get(key)
-                if salary is not None:
-                    break
+            # exact
+            for k in (key_fl, key_raw):
+                if k in name_to_salary:
+                    salary = name_to_salary[k]; break
+            # fuzzy across all
             if salary is None:
                 salary = _fuzzy_lookup(key_fl, name_to_salary, fuzzy_cache)
             if salary is None and key_raw != key_fl:
                 salary = _fuzzy_lookup(key_raw, name_to_salary, fuzzy_cache)
-
-            # position / team
-            pos = pm.get("pos") or name_to_pos.get(key_fl) or name_to_pos.get(key_raw) or p.get("position")
-            team = pm.get("team") or name_to_team.get(key_fl) or name_to_team.get(key_raw) or p.get("team")
+            # subset by pos/team if still None
+            if salary is None:
+                salary = _subset_then_fuzzy(key_fl, pos, team, name_to_salary, name_to_pos, name_to_team)
+            if salary is None and key_raw != key_fl:
+                salary = _subset_then_fuzzy(key_raw, pos, team, name_to_salary, name_to_pos, name_to_team)
 
             starters.append({
                 "player_id": pid,
-                "player": display_name or pid,
+                "player": display,
                 "pos": pos,
                 "team": team,
                 "salary": salary,
