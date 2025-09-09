@@ -36,10 +36,18 @@ def _bullet(items: List[str]) -> str:
     return "".join([f"- {i}\n" for i in items]) + "\n"
 
 
-def _render_standings(standings: Any) -> str:
+def _name_for(fid: str, fmap: Dict[str, str]) -> str:
+    if not fid:
+        return "unknown"
+    return fmap.get(str(fid), str(fid))
+
+
+def _render_standings(standings: Any, fmap: Dict[str, str]) -> str:
     rows: List[Tuple[str, float, float]] = []
     for row in _as_list(standings):
-        name = row.get("fname") or row.get("name") or row.get("id") or "Unknown"
+        fid = row.get("id") or ""
+        # prefer API's provided name (fname); fallback to our map
+        name = (row.get("fname") or row.get("name")) or _name_for(fid, fmap)
         try:
             pf = float(row.get("pf") or 0)
         except Exception:
@@ -61,7 +69,7 @@ def _render_standings(standings: Any) -> str:
     return out
 
 
-def _render_weekly_scores(weekly_results: Any) -> str:
+def _render_weekly_scores(weekly_results: Any, fmap: Dict[str, str]) -> str:
     if not isinstance(weekly_results, dict):
         return _h2("Weekly Scores") + _p("_No weekly results found._")
     wr = weekly_results.get("weeklyResults") or {}
@@ -71,23 +79,24 @@ def _render_weekly_scores(weekly_results: Any) -> str:
 
     team_rows: List[Tuple[str, float]] = []
     for f in franchises:
-        team_id = f.get("id") or "unknown"
+        fid = f.get("id") or "unknown"
         try:
             score = float(f.get("score") or 0)
         except Exception:
             score = 0.0
-        team_rows.append((team_id, score))
+        team_rows.append((_name_for(fid, fmap), score))
     team_rows.sort(key=lambda t: t[1], reverse=True)
 
     out = _h2("Weekly Scores (Starter Lineups)")
-    out += "Team ID | Score\n---|---:\n"
-    for tid, sc in team_rows:
-        out += f"{tid} | {sc:.2f}\n"
+    out += "Team | Score\n---|---:\n"
+    for name, sc in team_rows:
+        out += f"{name} | {sc:.2f}\n"
     out += "\n"
 
     bullets: List[str] = []
     for f in franchises:
-        tid = f.get("id") or "unknown"
+        fid = f.get("id") or "unknown"
+        tid = _name_for(fid, fmap)
         best = None
         top_score = -1e9
         for p in _as_list(f.get("player")):
@@ -106,7 +115,7 @@ def _render_weekly_scores(weekly_results: Any) -> str:
     return out
 
 
-def _render_values(values: Dict[str, Any]) -> str:
+def _render_values(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
     if not values:
         return ""
     top_vals = values.get("top_values") or []
@@ -121,7 +130,7 @@ def _render_values(values: Dict[str, Any]) -> str:
             ppk = it.get("ppk")
             team = it.get("team") or ""
             pos = it.get("pos") or ""
-            mgr = it.get("franchise_id") or ""
+            mgr = _name_for(it.get("franchise_id") or "", fmap)
             pts_s = f"{pts:.2f}" if isinstance(pts, (int, float)) else str(pts)
             sal_s = f"${int(sal):,}" if isinstance(sal, (int, float)) else "-"
             ppk_s = f"{ppk:.3f}" if isinstance(ppk, (int, float)) else "-"
@@ -134,7 +143,6 @@ def _render_values(values: Dict[str, Any]) -> str:
     out += _h2("Top Busts")
     out += _mk_rows(top_busts) if top_busts else _p("_No bust data available._")
 
-    # Optional per-position highlights (if present)
     by_pos = values.get("by_pos") or {}
     if by_pos:
         out += _h2("Best Values by Position")
@@ -144,7 +152,7 @@ def _render_values(values: Dict[str, Any]) -> str:
     return out
 
 
-def _render_pool_confidence(pool_nfl: Any, week: int) -> str:
+def _render_pool_confidence(pool_nfl: Any, week: int, fmap: Dict[str, str]) -> str:
     if not isinstance(pool_nfl, dict):
         return ""
     picks_root = pool_nfl.get("poolPicks")
@@ -158,6 +166,7 @@ def _render_pool_confidence(pool_nfl: Any, week: int) -> str:
     bullets: List[str] = []
     for fr in franchises:
         fid = fr.get("id", "unknown")
+        tid = _name_for(fid, fmap)
         wnode = None
         for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
@@ -172,7 +181,7 @@ def _render_pool_confidence(pool_nfl: Any, week: int) -> str:
             sorted_games = games
         top_n = sorted_games[:3]
         short = ", ".join([f"{g.get('pick','?')}({g.get('rank','-')})" for g in top_n]) if top_n else "—"
-        bullets.append(f"**{fid}** — {short}")
+        bullets.append(f"**{tid}** — {short}")
     if bullets:
         out += _bullet(bullets)
     else:
@@ -180,7 +189,7 @@ def _render_pool_confidence(pool_nfl: Any, week: int) -> str:
     return out
 
 
-def _render_survivor(survivor_pool: Any, week: int) -> str:
+def _render_survivor(survivor_pool: Any, week: int, fmap: Dict[str, str]) -> str:
     if not isinstance(survivor_pool, dict):
         return ""
     sp = survivor_pool.get("survivorPool")
@@ -191,20 +200,21 @@ def _render_survivor(survivor_pool: Any, week: int) -> str:
         return ""
 
     out = _h2("Survivor Pool — Week Picks")
-    out += "Team ID | Pick\n---|---\n"
+    out += "Team | Pick\n---|---\n"
     for fr in franchises:
         fid = fr.get("id", "unknown")
+        tid = _name_for(fid, fmap)
         pick = "—"
         for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
                 pick = w.get("pick") or "—"
                 break
-        out += f"{fid} | {pick}\n"
+        out += f"{tid} | {pick}\n"
     out += "\n"
     return out
 
 
-def _render_roasts(roasts: Dict[str, Any]) -> str:
+def _render_roasts(roasts: Dict[str, Any], fmap: Dict[str, str]) -> str:
     if not roasts:
         return ""
     out = _h2("Trophies & Roasts")
@@ -222,6 +232,7 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     make_html = bool(outputs.get("make_html", True))
 
     data = context.get("data") or {}
+    fmap = context.get("franchise_map") or {}
     standings = data.get("standings") or []
     weekly_results = data.get("weekly_results") or data.get("week") or {}
     pool_nfl = data.get("pool_nfl") or (data.get("week") or {}).get("pool_nfl") or {}
@@ -232,13 +243,12 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     md.append(_h1(title))
     md.append(_p(f"**Week {week} · {tz}**"))
 
-    # Sections
-    md.append(_render_standings(standings))
-    md.append(_render_weekly_scores(weekly_results))
-    md.append(_render_values(values))
-    md.append(_render_pool_confidence(pool_nfl, week))
-    md.append(_render_survivor(survivor, week))
-    md.append(_render_roasts(context.get("data", {}).get("roasts") or {}))
+    md.append(_render_standings(standings, fmap))
+    md.append(_render_weekly_scores(weekly_results, fmap))
+    md.append(_render_values(values, fmap))
+    md.append(_render_pool_confidence(pool_nfl, week, fmap))
+    md.append(_render_survivor(survivor, week, fmap))
+    md.append(_render_roasts(data.get("roasts") or {}, fmap))
 
     md.append(_p("_Generated automatically._"))
 
