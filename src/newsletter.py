@@ -14,51 +14,28 @@ def _as_list(x):
     return []
 
 
-def _h1(text: str) -> str:
-    return f"# {text}\n\n"
-
-
-def _h2(text: str) -> str:
-    return f"## {text}\n\n"
-
-
-def _h3(text: str) -> str:
-    return f"### {text}\n\n"
-
-
-def _p(text: str) -> str:
-    return f"{text}\n\n"
-
-
-def _bullet(items: List[str]) -> str:
-    if not items:
-        return ""
-    return "".join([f"- {i}\n" for i in items]) + "\n"
-
-
 def _name_for(fid: str, fmap: Dict[str, str]) -> str:
     if not fid:
         return "unknown"
     return fmap.get(str(fid), str(fid))
 
 
+def _h1(t: str): return f"# {t}\n\n"
+def _h2(t: str): return f"## {t}\n\n"
+def _h3(t: str): return f"### {t}\n\n"
+def _p(t: str):  return f"{t}\n\n"
+def _bul(items: List[str]): return "".join([f"- {i}\n" for i in items]) + ("\n" if items else "")
+
+
 def _render_standings(standings: Any, fmap: Dict[str, str]) -> str:
     rows: List[Tuple[str, float, float]] = []
     for row in _as_list(standings):
         fid = row.get("id") or ""
-        # prefer API's provided name (fname); fallback to our map
         name = (row.get("fname") or row.get("name")) or _name_for(fid, fmap)
-        try:
-            pf = float(row.get("pf") or 0)
-        except Exception:
-            pf = 0.0
-        try:
-            vp = float(row.get("vp") or 0)
-        except Exception:
-            vp = 0.0
+        pf = float(row.get("pf") or 0)
+        vp = float(row.get("vp") or 0)
         rows.append((name, pf, vp))
     rows.sort(key=lambda t: (t[2], t[1]), reverse=True)
-
     out = _h2("Standings (Week-to-date)")
     if not rows:
         return out + _p("_No standings data available._")
@@ -80,10 +57,7 @@ def _render_weekly_scores(weekly_results: Any, fmap: Dict[str, str]) -> str:
     team_rows: List[Tuple[str, float]] = []
     for f in franchises:
         fid = f.get("id") or "unknown"
-        try:
-            score = float(f.get("score") or 0)
-        except Exception:
-            score = 0.0
+        score = float(f.get("score") or 0)
         team_rows.append((_name_for(fid, fmap), score))
     team_rows.sort(key=lambda t: t[1], reverse=True)
 
@@ -92,26 +66,23 @@ def _render_weekly_scores(weekly_results: Any, fmap: Dict[str, str]) -> str:
     for name, sc in team_rows:
         out += f"{name} | {sc:.2f}\n"
     out += "\n"
+    return out
 
-    bullets: List[str] = []
-    for f in franchises:
-        fid = f.get("id") or "unknown"
-        tid = _name_for(fid, fmap)
-        best = None
-        top_score = -1e9
-        for p in _as_list(f.get("player")):
-            try:
-                ps = float(p.get("score") or 0)
-            except Exception:
-                ps = 0.0
-            if ps > top_score:
-                top_score = ps
-                best = p
-        if best is not None and top_score > 0:
-            bullets.append(f"**{tid}** — top starter scored {top_score:.2f} pts (player id {best.get('id')}).")
-    if bullets:
-        out += _h3("Team Highlights")
-        out += _bullet(bullets)
+
+def _render_top_performers(values: Dict[str, Any]) -> str:
+    tp = values.get("top_performers") or []
+    out = _h2("Top Performers")
+    if not tp:
+        return out + _p("_No top performer data available._")
+    out += "Player | Pos | Team | Pts | Manager\n---|---|---|---:|---\n"
+    for r in tp:
+        nm = r.get("player") or "Unknown"
+        pos = r.get("pos") or ""
+        tm = r.get("team") or ""
+        pts = r.get("pts")
+        mgr = r.get("franchise_id") or ""
+        out += f"{nm} | {pos} | {tm} | {pts:.2f} | {mgr}\n"
+    out += "\n"
     return out
 
 
@@ -128,64 +99,67 @@ def _render_values(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
             pts = it.get("pts")
             sal = it.get("salary")
             ppk = it.get("ppk")
-            team = it.get("team") or ""
+            tm = it.get("team") or ""
             pos = it.get("pos") or ""
             mgr = _name_for(it.get("franchise_id") or "", fmap)
-            pts_s = f"{pts:.2f}" if isinstance(pts, (int, float)) else str(pts)
-            sal_s = f"${int(sal):,}" if isinstance(sal, (int, float)) else "-"
-            ppk_s = f"{ppk:.3f}" if isinstance(ppk, (int, float)) else "-"
-            out += f"{who} | {pts_s} | {sal_s} | {ppk_s} | {team} | {pos} | {mgr}\n"
+            out += f"{who} | {pts:.2f} | {('$'+format(int(sal),',') if isinstance(sal,(int,float)) else '-')}"
+            out += f" | {(f'{ppk:.3f}' if isinstance(ppk,(int,float)) else '-')} | {tm} | {pos} | {mgr}\n"
         out += "\n"
         return out
 
-    out = _h2("Top Values")
-    out += _mk_rows(top_vals) if top_vals else _p("_No value data available._")
-    out += _h2("Top Busts")
-    out += _mk_rows(top_busts) if top_busts else _p("_No bust data available._")
+    out = _h2("Value vs. Busts")
+    out += _h3("Biggest Steals (Pts per $1K)")
+    out += _mk_rows(top_vals[:10]) if top_vals else _p("_No value data available._")
+    out += _h3("Overpriced Busts (Pts per $1K)")
+    out += _mk_rows(top_busts[:10]) if top_busts else _p("_No bust data available._")
+    return out
 
-    by_pos = values.get("by_pos") or {}
-    if by_pos:
-        out += _h2("Best Values by Position")
-        for pos, rows in by_pos.items():
-            out += _h3(pos)
-            out += _mk_rows(rows[:5])
+
+def _render_power_rankings(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
+    te = values.get("team_efficiency") or []
+    out = _h2("Power Rankings [Roast] — Efficiency")
+    if not te:
+        return out + _p("_No efficiency data available._")
+    out += "Team | Pts | Salary | P/$1K\n---|---:|---:|---:\n"
+    for row in te:
+        nm = _name_for(row.get("franchise_id",""), fmap)
+        pts = row.get("total_pts", 0.0)
+        sal = row.get("total_sal", 0)
+        ppk = row.get("ppk")
+        out += f"{nm} | {pts:.2f} | ${int(sal):,} | {(f'{ppk:.2f}' if ppk is not None else '-')}\n"
+    out += "\n"
     return out
 
 
 def _render_pool_confidence(pool_nfl: Any, week: int, fmap: Dict[str, str]) -> str:
     if not isinstance(pool_nfl, dict):
         return ""
-    picks_root = pool_nfl.get("poolPicks")
-    if not isinstance(picks_root, dict):
+    pr = pool_nfl.get("poolPicks")
+    if not isinstance(pr, dict):
         return ""
-    franchises = _as_list(picks_root.get("franchise"))
+    franchises = _as_list(pr.get("franchise"))
     if not franchises:
         return ""
-
-    out = _h2("Confidence Pool — Highlights")
+    out = _h2("Confidence Pick’em — Spotlight")
+    # Show top-3 ranks per franchise
     bullets: List[str] = []
     for fr in franchises:
-        fid = fr.get("id", "unknown")
-        tid = _name_for(fid, fmap)
+        fid = fr.get("id","unknown")
+        nm = _name_for(fid, fmap)
         wnode = None
         for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
-                wnode = w
-                break
-        if not wnode:
+                wnode = w; break
+        if not wnode: 
             continue
         games = _as_list(wnode.get("game"))
         try:
-            sorted_games = sorted(games, key=lambda g: int(g.get("rank") or 0), reverse=True)
+            games = sorted(games, key=lambda g: int(g.get("rank") or 0), reverse=True)
         except Exception:
-            sorted_games = games
-        top_n = sorted_games[:3]
-        short = ", ".join([f"{g.get('pick','?')}({g.get('rank','-')})" for g in top_n]) if top_n else "—"
-        bullets.append(f"**{tid}** — {short}")
-    if bullets:
-        out += _bullet(bullets)
-    else:
-        out += _p("_No confidence picks available for this week._")
+            pass
+        short = ", ".join([f"{g.get('pick','?')}({g.get('rank','-')})" for g in games[:3]]) if games else "—"
+        bullets.append(f"**{nm}** — {short}")
+    out += _bul(bullets) if bullets else _p("_No confidence picks available for this week._")
     return out
 
 
@@ -198,28 +172,33 @@ def _render_survivor(survivor_pool: Any, week: int, fmap: Dict[str, str]) -> str
     franchises = _as_list(sp.get("franchise"))
     if not franchises:
         return ""
-
-    out = _h2("Survivor Pool — Week Picks")
+    out = _h2("Survivor — Walk of Shame Watch")
     out += "Team | Pick\n---|---\n"
     for fr in franchises:
-        fid = fr.get("id", "unknown")
-        tid = _name_for(fid, fmap)
+        fid = fr.get("id","unknown")
+        nm = _name_for(fid, fmap)
         pick = "—"
         for w in _as_list(fr.get("week")):
             if str(w.get("week") or "") == str(week):
-                pick = w.get("pick") or "—"
-                break
-        out += f"{tid} | {pick}\n"
+                pick = w.get("pick") or "—"; break
+        out += f"{nm} | {pick}\n"
     out += "\n"
     return out
 
 
-def _render_roasts(roasts: Dict[str, Any], fmap: Dict[str, str]) -> str:
+def _render_roasts(roasts: Dict[str, Any]) -> str:
     if not roasts:
         return ""
     out = _h2("Trophies & Roasts")
-    for k, v in roasts.items():
-        out += f"- **{k.replace('_',' ').title()}**: {v}\n"
+    # Named trophies first
+    for key in ("coupon_clipper","dumpster_fire","galaxy_brain","banana_peel","walk_of_shame"):
+        if key in roasts:
+            out += f"- **{key.replace('_',' ').title()}**: {roasts[key]}\n"
+    # Flavor blurbs
+    lines = roasts.get("lines") or []
+    if lines:
+        out += "\n" + _h3("League Flavor")
+        out += _bul(lines)
     out += "\n"
     return out
 
@@ -233,31 +212,35 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
 
     data = context.get("data") or {}
     fmap = context.get("franchise_map") or {}
+
     standings = data.get("standings") or []
     weekly_results = data.get("weekly_results") or data.get("week") or {}
+    values = data.get("values") or {}
     pool_nfl = data.get("pool_nfl") or (data.get("week") or {}).get("pool_nfl") or {}
     survivor = data.get("survivor_pool") or (data.get("week") or {}).get("survivor_pool") or {}
-    values = data.get("values") or {}
 
     md = []
     md.append(_h1(title))
     md.append(_p(f"**Week {week} · {tz}**"))
 
+    # Core sections
     md.append(_render_standings(standings, fmap))
     md.append(_render_weekly_scores(weekly_results, fmap))
+    md.append(_render_top_performers(values))
     md.append(_render_values(values, fmap))
+    md.append(_render_power_rankings(values, fmap))
     md.append(_render_pool_confidence(pool_nfl, week, fmap))
     md.append(_render_survivor(survivor, week, fmap))
-    md.append(_render_roasts(data.get("roasts") or {}, fmap))
-
+    md.append(_render_roasts(data.get("roasts") or {}))
     md.append(_p("_Generated automatically._"))
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     md_path = Path(output_dir) / f"NPFFL_Week_{int(week):02d}.md"
-    md_path.write_text("".join(md), encoding="utf-8")
+    text = "".join(md)
+    md_path.write_text(text, encoding="utf-8")
 
     if make_html:
-        html_text = mdlib.markdown("".join(md), extensions=["tables", "fenced_code"])
+        html_text = mdlib.markdown(text, extensions=["tables", "fenced_code"])
         (Path(output_dir) / f"NPFFL_Week_{int(week):02d}.html").write_text(html_text, encoding="utf-8")
 
     return str(md_path)
