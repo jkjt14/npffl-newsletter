@@ -26,7 +26,34 @@ def _get_json(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
         return {}
 
 
+def _first_last_from_any(p: Dict[str, Any]) -> str:
+    """
+    MFL sometimes returns 'name' as 'Last, First' or separate 'firstName'/'lastName'.
+    Normalize to 'First Last'.
+    """
+    name = (p.get("name") or "").strip()
+    first = (p.get("firstName") or p.get("fname") or "").strip()
+    last = (p.get("lastName") or p.get("lname") or "").strip()
+
+    if name:
+        # If "Last, First", flip
+        if "," in name:
+            parts = [x.strip() for x in name.split(",", 1)]
+            if len(parts) == 2:
+                return f"{parts[1]} {parts[0]}".strip()
+        return name
+
+    if first or last:
+        return f"{first} {last}".strip()
+
+    return ""
+
+
 def _players_map(year: int) -> Dict[str, Dict[str, str]]:
+    """
+    Return {player_id: {name (First Last), pos, team}}
+    Tries TYPE=players with as many fields as available.
+    """
     url = f"{_base_url(year)}/export"
     params = {"TYPE": "players"}
     data = _get_json(url, params)
@@ -37,11 +64,13 @@ def _players_map(year: int) -> Dict[str, Dict[str, str]]:
             pid = str(p.get("id") or "").strip()
             if not pid:
                 continue
-            out[pid] = {
-                "name": str(p.get("name") or "").strip(),
-                "pos": str(p.get("position") or p.get("pos") or "").strip(),
-                "team": str(p.get("team") or "").strip(),
-            }
+            disp = _first_last_from_any(p) or (p.get("name") or "").strip()
+            pos = str(p.get("position") or p.get("pos") or "").strip()
+            team = str(p.get("team") or "").strip()
+            if not disp:
+                # fallback to raw 'name' if present
+                disp = (p.get("name") or "").strip()
+            out[pid] = {"name": disp, "pos": pos, "team": team}
     return out
 
 
@@ -99,19 +128,20 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
     standings_rows = _standings_rows(standings_json)
     franchise_names = _franchise_names_from_standings(standings_json)
 
-    # Pools
+    # Confidence pool
     pool_params = {"TYPE": "pool", "L": str(league_id), "POOLTYPE": "NFL"}
     if apikey: pool_params["APIKEY"] = apikey
     pool_nfl = _get_json(f"{base}/export", pool_params)
 
+    # Survivor pool
     survivor_params = {"TYPE": "survivorPool", "L": str(league_id)}
     if apikey: survivor_params["APIKEY"] = apikey
     survivor_pool = _get_json(f"{base}/export", survivor_params)
 
-    # Players map (for names)
+    # Players (names/pos/team)
     pmap = _players_map(year)
 
-    # Real win probs (Vegas)
+    # Real win probs
     odds_map = fetch_week_win_probs_nfl(week=week, season_year=year) or {}
 
     return {
@@ -121,5 +151,5 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
         "survivor_pool": survivor_pool,
         "players_map": pmap,
         "franchise_names": franchise_names,
-        "odds": odds_map,   # <-- new
+        "odds": odds_map,
     }
