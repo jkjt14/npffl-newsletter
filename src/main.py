@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -48,7 +47,7 @@ def _load_optional_odds(year: int, week: int) -> Dict[str, Dict[str, float]]:
                 prob_c = cols.get("win_prob")
                 if not team_c or not prob_c:
                     continue
-                out = {}
+                out: Dict[str, Dict[str, float]] = {}
                 for _, r in df.iterrows():
                     t = str(r.get(team_c) or "").strip().upper()
                     if not t:
@@ -89,8 +88,8 @@ def main():
         # If "auto": choose latest completed week from API results; fallback to 1
         week = 1
 
-    # Auth from env/secrets (username/password or API key/cookie handled in client)
-    client = MFLClient(league_id=league_id, year=year, timezone=tz)
+    # Create API client (no timezone arg)
+    client = MFLClient(league_id=league_id, year=year)
 
     # Fetch raw week JSON (weekly results, standings, pools, players map)
     week_data = fetch_week_data(client, week=week)
