@@ -40,6 +40,7 @@ jobs:
           echo "MFL_USERNAME=${MFL_USERNAME}" >> $GITHUB_ENV
           echo "MFL_PASSWORD=${MFL_PASSWORD}" >> $GITHUB_ENV
           echo "MFL_API_KEY=${MFL_API_KEY}"   >> $GITHUB_ENV
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }} 
           echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> $GITHUB_ENV
 
       - name: Run newsletter
