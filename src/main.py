@@ -9,22 +9,12 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Local imports (keep these names stable)
+import yaml  # requires PyYAML
+
+# keep this import/alias — avoids ImportError if function is named post_to_slack
 from .post_outputs import post_to_slack as post_slack, mailchimp_send
 from .newsletter import render_newsletter
 
-# Optional modules — imported inside functions with try/except to avoid hard crashes
-#   - .mfl_client
-#   - .load_salary
-#   - .fetch_week
-#   - .value_engine
-#   - .roastbook
-
-try:
-    import yaml  # PyYAML
-except Exception as e:  # pragma: no cover
-    print("ERROR: PyYAML is required. Add 'PyYAML' to requirements.txt.", file=sys.stderr)
-    raise
 
 # -----------------------------
 # Config / Week Resolution
@@ -33,6 +23,7 @@ except Exception as e:  # pragma: no cover
 def load_config(path: str = "config.yaml") -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
+
 
 def resolve_week(args_week: Optional[str], cfg: Dict[str, Any]) -> int:
     """
@@ -43,27 +34,27 @@ def resolve_week(args_week: Optional[str], cfg: Dict[str, Any]) -> int:
       4) infer from salary files matching inputs.salary_glob (pick max week)
       5) default to 1
     """
-    # 1) CLI wins
+    # CLI wins
     if args_week and args_week.strip().isdigit():
         return int(args_week.strip())
 
     inputs = (cfg.get("inputs") or {})
 
-    # 2) explicit week (int/str)
+    # explicit week
     wk = inputs.get("week")
     if isinstance(wk, int):
         return wk
     if isinstance(wk, str) and wk.strip().isdigit():
         return int(wk.strip())
 
-    # 3) week_strategy
+    # strategy
     strat = inputs.get("week_strategy", "auto")
     if isinstance(strat, int):
         return strat
     if isinstance(strat, str) and strat.strip().isdigit():
         return int(strat.strip())
 
-    # 4) auto: infer from salary filenames like YYYY_WW_Salary.xlsx
+    # infer from salary filenames like YYYY_WW_Salary.xlsx
     salary_glob = inputs.get("salary_glob", "data/salaries/*Salary.xlsx")
     weeks: list[int] = []
     for p in glob.glob(salary_glob):
@@ -73,50 +64,60 @@ def resolve_week(args_week: Optional[str], cfg: Dict[str, Any]) -> int:
     if weeks:
         return max(weeks)
 
-    # 5) safe default
     return 1
 
+
 # -----------------------------
-# Data Loading Helpers (best-effort)
+# Auth / Clients
 # -----------------------------
 
 def build_auth_from_env() -> Dict[str, Optional[str]]:
     return {
-        "api_key": os.getenv("MFL_API_KEY"),
         "username": os.getenv("MFL_USERNAME"),
         "password": os.getenv("MFL_PASSWORD"),
     }
 
-def make_mfl_client(auth: Dict[str, Optional[str]]):
+
+def make_mfl_client(cfg: Dict[str, Any], auth: Dict[str, Optional[str]]):
     """
-    Best-effort: construct an MFL client if the module/class exists.
-    Otherwise return None — downstream fetch functions should accept that.
+    Creates an authenticated MFL client (cookie-based). Returns None if unavailable.
     """
     try:
         from .mfl_client import MFLClient  # type: ignore
-    except Exception:
+    except Exception as e:
+        print(f"ERROR: mfl_client import failed: {e}", file=sys.stderr)
         return None
 
-    # Prefer API key if present
-    if auth.get("api_key"):
-        try:
-            return MFLClient(api_key=auth["api_key"])
-        except Exception:
-            pass
+    league_id = cfg.get("league_id")
+    if not league_id:
+        print("ERROR: config.yaml missing 'league_id'", file=sys.stderr)
+        return None
 
-    # Fallback to username/password if present
-    if auth.get("username") and auth.get("password"):
-        try:
-            return MFLClient(username=auth["username"], password=auth["password"])
-        except Exception:
-            pass
+    host = os.getenv("MFL_HOST") or None
+    year_env = os.getenv("MFL_YEAR")
+    year = int(year_env) if year_env and year_env.isdigit() else None
 
-    # No viable auth
-    return None
+    try:
+        return MFLClient(
+            league_id=league_id,
+            username=auth.get("username"),
+            password=auth.get("password"),
+            host=host,
+            year=year,
+            user_agent=os.getenv("MFL_USER_AGENT", "NPFFLNewsletter/1.0 (automation)"),
+        )
+    except Exception as e:
+        print(f"ERROR: failed to construct MFLClient: {e}", file=sys.stderr)
+        return None
+
+
+# -----------------------------
+# Data Loading Helpers
+# -----------------------------
 
 def load_salary_frame(cfg: Dict[str, Any]):
     """
-    Returns a pandas.DataFrame or None.
+    Returns a pandas.DataFrame or None, and also returns the DF in context for rendering.
     """
     try:
         from .load_salary import load_salary  # type: ignore
@@ -131,10 +132,10 @@ def load_salary_frame(cfg: Dict[str, Any]):
         print(f"WARNING: load_salary failed: {e}", file=sys.stderr)
         return None
 
+
 def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
     """
-    Returns a dict with whatever the fetch module provides, or {}.
-    Tries a few common function names to be tolerant of implementation.
+    Calls into src/fetch_week.py if present; returns {} if not available.
     """
     try:
         import importlib
@@ -143,33 +144,31 @@ def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
         print("NOTE: fetch_week module not available; continuing with empty week data.")
         return {}
 
-    league_id = cfg.get("league_id") or (cfg.get("newsletter") or {}).get("league_id")
-    if not league_id:
-        league_id = (cfg.get("inputs") or {}).get("league_id")
+    # Try preferred signature
+    fn = getattr(fw, "fetch_week_data", None)
+    if callable(fn):
+        try:
+            return fn(cfg.get("league_id"), week, client)
+        except Exception as e:
+            print(f"WARNING: fetch_week_data failed: {e}", file=sys.stderr)
+            return {}
 
-    # Try common entry points with graceful fallback
-    for fn_name in ("fetch_week_data", "fetch_week", "get_week"):
-        fn = getattr(fw, fn_name, None)
-        if callable(fn):
+    # Fallbacks if your function name differs
+    for alt in ("fetch_week", "get_week"):
+        f = getattr(fw, alt, None)
+        if callable(f):
             try:
-                # Try passing client and league_id if supported, else fewer args
-                try:
-                    return fn(league_id=league_id, week=week, client=client)  # type: ignore[arg-type]
-                except TypeError:
-                    try:
-                        return fn(league_id=league_id, week=week)  # type: ignore[misc]
-                    except TypeError:
-                        return fn(week)  # type: ignore[misc]
+                return f(cfg.get("league_id"), week, client)  # type: ignore[misc]
             except Exception as e:
-                print(f"WARNING: {fn_name} raised: {e}", file=sys.stderr)
+                print(f"WARNING: {alt} failed: {e}", file=sys.stderr)
                 break
 
-    print("NOTE: No usable fetch function found in fetch_week; continuing empty.")
     return {}
+
 
 def compute_values(salary_df, week_data) -> Dict[str, Any]:
     """
-    Returns a result dict (top values, busts, etc.) or {}.
+    Returns a dict (top_values/top_busts/etc.) or {}.
     """
     try:
         import importlib
@@ -178,7 +177,6 @@ def compute_values(salary_df, week_data) -> Dict[str, Any]:
         print("NOTE: value_engine module not available; skipping value computation.")
         return {}
 
-    # Try common function names
     for fn_name in ("compute_values", "compute_value", "run"):
         fn = getattr(ve, fn_name, None)
         if callable(fn):
@@ -191,9 +189,10 @@ def compute_values(salary_df, week_data) -> Dict[str, Any]:
     print("NOTE: No usable function found in value_engine; continuing without values.")
     return {}
 
+
 def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], week_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Returns roasts/trophies payload or {}.
+    Returns roasts/trophies data or {}.
     """
     try:
         import importlib
@@ -213,6 +212,7 @@ def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], 
 
     print("NOTE: No usable function found in roastbook; continuing without roasts.")
     return {}
+
 
 # -----------------------------
 # Entry
@@ -244,26 +244,28 @@ def main() -> None:
 
     print(f"[main] Year={cfg.get('year')} League={cfg.get('league_id')} Week={week}")
 
-    # Auth + client (best-effort)
+    # Auth + client
     auth = build_auth_from_env()
-    client = make_mfl_client(auth)
+    client = make_mfl_client(cfg, auth)
 
-    # Data pipeline (best-effort, with graceful fallbacks)
+    # Data pipeline
     salary_df = load_salary_frame(cfg)
     week_data = fetch_week_data(cfg, week, client)
     value_results = compute_values(salary_df, week_data)
     roasts = build_roasts(cfg, week, value_results, week_data)
 
-    # Build a context for the newsletter (keep keys simple + tolerant)
+    # Build rendering context
     context: Dict[str, Any] = {
         "year": cfg.get("year"),
         "league_id": cfg.get("league_id"),
         "timezone": cfg.get("timezone", "America/New_York"),
         "newsletter": cfg.get("newsletter", {}),
+        "outputs": cfg.get("outputs", {}),
         "trophies": cfg.get("trophies", []),
         "week": week,
         "data": {
             "salary_rows": int(getattr(salary_df, "shape", [0, 0])[0]) if salary_df is not None else 0,
+            "salary_df": salary_df,            # allow salary fallbacks in the template
             "week": week_data or {},
             "values": value_results or {},
             "roasts": roasts or {},
@@ -275,20 +277,31 @@ def main() -> None:
     md_path = render_newsletter(context=context, output_dir=out_dir, week=week)
     print(f"[main] Wrote newsletter to {md_path}")
 
-    # Optional Slack (post_outputs.post_to_slack is fail-soft if no webhook)
+    # Slack summary (fail-soft if webhook missing)
     push_to_slack = bool(out_cfg.get("push_to_slack", False))
     if push_to_slack:
         title = (cfg.get("newsletter") or {}).get("title", "NPFFL Weekly Roast")
-        summary = f"{title} — Week {week}\n{Path(md_path).name}"
+        lines = [
+            f"{title} — Week {week}",
+            Path(md_path).name,
+        ]
+        if value_results:
+            tv = len(value_results.get("top_values") or [])
+            tb = len(value_results.get("top_busts") or [])
+            lines.append(f"Top values: {tv} | Busts: {tb}")
+        if salary_df is not None:
+            try:
+                lines.append(f"Salary rows: {getattr(salary_df, 'shape', [0])[0]}")
+            except Exception:
+                pass
+        summary = "\n".join(lines)
         try:
             post_slack(summary)
             print("[main] Posted summary to Slack.")
         except Exception as e:
-            # Keep pipeline green even if Slack chokes
             print(f"WARNING: Slack post failed: {e}", file=sys.stderr)
 
-    # Optional: email / Mailchimp hook if configured (no-op by default)
-    # Example (only if you’ve implemented mailchimp_send):
+    # Placeholder for optional email / Mailchimp
     # mc_cfg = (cfg.get("mailchimp") or {})
     # if mc_cfg.get("enabled"):
     #     try:
