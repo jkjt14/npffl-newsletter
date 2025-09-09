@@ -26,35 +26,23 @@ def load_config(path: str = "config.yaml") -> Dict[str, Any]:
 
 
 def resolve_week(args_week: Optional[str], cfg: Dict[str, Any]) -> int:
-    """
-    Priority:
-      1) --week CLI input if provided and numeric
-      2) inputs.week (if present)
-      3) inputs.week_strategy (int or "auto")
-      4) infer from salary files matching inputs.salary_glob (pick max week)
-      5) default to 1
-    """
-    # CLI wins
     if args_week and args_week.strip().isdigit():
         return int(args_week.strip())
 
     inputs = (cfg.get("inputs") or {})
 
-    # explicit week
     wk = inputs.get("week")
     if isinstance(wk, int):
         return wk
     if isinstance(wk, str) and wk.strip().isdigit():
         return int(wk.strip())
 
-    # strategy
     strat = inputs.get("week_strategy", "auto")
     if isinstance(strat, int):
         return strat
     if isinstance(strat, str) and strat.strip().isdigit():
         return int(strat.strip())
 
-    # infer from salary filenames like YYYY_WW_Salary.xlsx
     salary_glob = inputs.get("salary_glob", "data/salaries/*Salary.xlsx")
     weeks: list[int] = []
     for p in glob.glob(salary_glob):
@@ -75,14 +63,10 @@ def build_auth_from_env() -> Dict[str, Optional[str]]:
     return {
         "username": os.getenv("MFL_USERNAME"),
         "password": os.getenv("MFL_PASSWORD"),
-        # API key is read inside MFLClient
     }
 
 
 def make_mfl_client(cfg: Dict[str, Any], auth: Dict[str, Optional[str]]):
-    """
-    Creates an authenticated MFL client (API key preferred; cookie fallback). Returns None if unavailable.
-    """
     try:
         from .mfl_client import MFLClient  # type: ignore
     except Exception as e:
@@ -117,9 +101,6 @@ def make_mfl_client(cfg: Dict[str, Any], auth: Dict[str, Optional[str]]):
 # -----------------------------
 
 def load_salary_frame(cfg: Dict[str, Any]):
-    """
-    Returns a pandas.DataFrame or None, and also returns the DF in context for rendering.
-    """
     try:
         from .load_salary import load_salary  # type: ignore
     except Exception:
@@ -135,9 +116,6 @@ def load_salary_frame(cfg: Dict[str, Any]):
 
 
 def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
-    """
-    Calls into src/fetch_week.py if present; returns {} if not available.
-    """
     try:
         import importlib
         fw = importlib.import_module(__package__ + ".fetch_week")  # type: ignore
@@ -145,7 +123,6 @@ def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
         print("NOTE: fetch_week module not available; continuing with empty week data.")
         return {}
 
-    # Preferred signature
     fn = getattr(fw, "fetch_week_data", None)
     if callable(fn):
         try:
@@ -154,7 +131,6 @@ def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
             print(f"WARNING: fetch_week_data failed: {e}", file=sys.stderr)
             return {}
 
-    # Fallbacks if your function name differs
     for alt in ("fetch_week", "get_week"):
         f = getattr(fw, alt, None)
         if callable(f):
@@ -163,14 +139,10 @@ def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
             except Exception as e:
                 print(f"WARNING: {alt} failed: {e}", file=sys.stderr)
                 break
-
     return {}
 
 
 def compute_values(salary_df, week_data) -> Dict[str, Any]:
-    """
-    Returns a dict (top_values/top_busts/etc.) or {}.
-    """
     try:
         import importlib
         ve = importlib.import_module(__package__ + ".value_engine")  # type: ignore
@@ -192,9 +164,6 @@ def compute_values(salary_df, week_data) -> Dict[str, Any]:
 
 
 def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], week_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Returns roasts/trophies data or {}.
-    """
     try:
         import importlib
         rb = importlib.import_module(__package__ + ".roastbook")  # type: ignore
@@ -213,6 +182,14 @@ def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], 
 
     print("NOTE: No usable function found in roastbook; continuing without roasts.")
     return {}
+
+
+def _merge_franchise_maps(detected: Dict[str, str], overrides: Dict[str, str]) -> Dict[str, str]:
+    merged = dict(detected or {})
+    for k, v in (overrides or {}).items():
+        if k and v:
+            merged[str(k)] = str(v)
+    return merged
 
 
 # -----------------------------
@@ -263,21 +240,27 @@ def main() -> None:
         st_list = week_data.get("standings") or []
         pool_nfl = week_data.get("pool_nfl") or {}
         survivor = week_data.get("survivor_pool") or {}
+        fr_map_detected = week_data.get("franchise_map_detected") or {}
 
-        # Print quick counts to logs
         print("[debug] weekly_results keys:", list(wr.keys()) if isinstance(wr, dict) else type(wr).__name__)
         print("[debug] standings_count:", len(st_list) if isinstance(st_list, list) else 0)
+        print("[debug] franchise_map_detected:", len(fr_map_detected))
 
-        # Write raw JSON so we can inspect from Artifacts
         (dbg_dir / f"weekly_results_w{week}.json").write_text(json.dumps(wr, indent=2), encoding="utf-8")
         (dbg_dir / "standings.json").write_text(json.dumps(st_list, indent=2), encoding="utf-8")
         (dbg_dir / "pool_nfl.json").write_text(json.dumps(pool_nfl, indent=2), encoding="utf-8")
         (dbg_dir / "survivor_pool.json").write_text(json.dumps(survivor, indent=2), encoding="utf-8")
+        (dbg_dir / "franchise_map_detected.json").write_text(json.dumps(fr_map_detected, indent=2), encoding="utf-8")
     except Exception as e:
         print(f"[debug] failed to write debug artifacts: {e}", file=sys.stderr)
 
+    # Values + Roasts
     value_results = compute_values(salary_df, week_data)
     roasts = build_roasts(cfg, week, value_results, week_data)
+
+    # Merge franchise name sources (overrides win)
+    overrides = (cfg.get("franchise_names") or {})  # user-provided mapping
+    franchise_map = _merge_franchise_maps(week_data.get("franchise_map_detected") or {}, overrides)
 
     # Build rendering context
     context: Dict[str, Any] = {
@@ -288,13 +271,17 @@ def main() -> None:
         "outputs": cfg.get("outputs", {}),
         "trophies": cfg.get("trophies", []),
         "week": week,
+        "franchise_map": franchise_map,
         "data": {
             "salary_rows": int(getattr(salary_df, "shape", [0, 0])[0]) if salary_df is not None else 0,
-            "salary_df": salary_df,            # allow salary fallbacks in the template
+            "salary_df": salary_df,
             "week": week_data or {},
+            "weekly_results": week_data.get("weekly_results") or {},
             "values": value_results or {},
             "roasts": roasts or {},
             "standings": (week_data or {}).get("standings"),
+            "pool_nfl": week_data.get("pool_nfl"),
+            "survivor_pool": week_data.get("survivor_pool"),
         },
     }
 
@@ -325,14 +312,6 @@ def main() -> None:
             print("[main] Posted summary to Slack.")
         except Exception as e:
             print(f"WARNING: Slack post failed: {e}", file=sys.stderr)
-
-    # Placeholder for optional email / Mailchimp
-    # mc_cfg = (cfg.get("mailchimp") or {})
-    # if mc_cfg.get("enabled"):
-    #     try:
-    #         mailchimp_send(md_path, cfg, week)
-    #     except Exception as e:
-    #         print(f"WARNING: mailchimp_send failed: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":
