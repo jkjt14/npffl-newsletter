@@ -32,4 +32,8 @@ franchise_names:
   "0015": "BANG"
   "0016": "Politically Incorrect"
   "0017": "Polish Pounders"
+assets:
+  use_franchise_logos: true
+  logos_dir: "assets/franchises"   # put PNGs here, named by Franchise ID (e.g., 0001.png)
+  logo_width_px: 26                # rendered width in Markdown/HTML tables
 
