@@ -8,45 +8,46 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 16 * * 2"  # Tuesdays 12:00 PM ET (EDT)
+    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
 
 permissions:
   contents: read
 
-jobs:
-  build-newsletter:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    - name: Install deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
+    - name: Configure env
+      env:
+        MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
+        MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
+        MFL_API_KEY: ${{ secrets.MFL_API_KEY }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: |
+        echo "MFL_USERNAME=${MFL_USERNAME}" >> $GITHUB_ENV
+        echo "MFL_PASSWORD=${MFL_PASSWORD}" >> $GITHUB_ENV
+        echo "MFL_API_KEY=${MFL_API_KEY}"   >> $GITHUB_ENV
+        echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> $GITHUB_ENV
 
-      - name: Ensure requirements
+    - name: Run newsletter
+      env:
+        WEEK: ${{ github.event.inputs.week }}
+      run: |
+        python -m src.main --week "${WEEK}" env
+        env:
+          MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
+          MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
+          MFL_API_KEY: ${{ secrets.MFL_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
-          set -euo pipefail
-          if [ ! -f requirements.txt ]; then
-            cat > requirements.txt <<'REQ'
-pandas>=2.2
-requests>=2.32
-PyYAML>=6.0
-openpyxl>=3.1
-python-dateutil>=2.9
-jinja2>=3.1
-markdown>=3.6
-beautifulsoup4>=4.12
-lxml>=5.2
-rapidfuzz>=3.7
-REQ
-          else
-            # make sure critical deps exist
-            for pkg in pandas requests PyYAML openpyxl python-dateutil jinja2 markdown beautifulsoup4 lxml rapidfuzz; do
-              grep -iE "^\s*$pkg\b" requirements.txt >/dev/null || echo "$pkg" >> requirements.txt
-            done
+          echo "MFL_USERNAME=${MFL_USERNAME}" >> $GITHUB_ENV
+          echo "MFL_PASSWORD=${MFL_PASSWORD}" >> $GITHUB_ENV
+          echo "MFL_API_KEY=${MFL_API_KEY}"   >> $GITHUB_ENV
+          echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> $GITHUB_ENV
+
+      - name: Run newsletter
+        env:
+          WEEK: ${{ github.event.inputs.week }}
+        run: |
+          python -m src.main --week "${WEEK}"
