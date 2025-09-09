@@ -8,6 +8,8 @@ try:
 except Exception:
     pd = None
 
+from rapidfuzz import process, fuzz
+
 
 def _as_list(x):
     if isinstance(x, list):
@@ -19,6 +21,7 @@ def _as_list(x):
 
 def _clean_key(n: str) -> str:
     n = (n or "").strip()
+    n = re.sub(r"[^A-Za-z0-9 ,.'-]+", " ", n)
     n = re.sub(r"\s+", " ", n)
     return n.lower()
 
@@ -55,18 +58,45 @@ def _salary_index_from_df(df: "pd.DataFrame"):
         df2["Salary"] = pd.to_numeric(df2["Salary"], errors="coerce")
     for _, r in df2.iterrows():
         nm = str(r.get("Name") or "").strip()
-        if not nm: continue
-        key = _clean_key(nm)
+        if not nm:
+            continue
+        # Keep both keys: as-is (likely "Last, First") and a First Last variant for matching
+        key_exact = _clean_key(nm)
+        # Build First Last if "Last, First"
+        if "," in nm:
+            last, first = [t.strip() for t in nm.split(",", 1)]
+            key_fl = _clean_key(f"{first} {last}")
+        else:
+            key_fl = key_exact
+
         sal = r.get("Salary")
         if sal is not None and pd.notna(sal):
-            name_to_salary[key] = float(sal)
+            name_to_salary[key_exact] = float(sal)
+            name_to_salary.setdefault(key_fl, float(sal))
+
         pos = str(r.get("Pos") or "").strip()
         team = str(r.get("Team") or "").strip()
         if pos:
-            name_to_pos[key] = pos
+            name_to_pos[key_exact] = pos
+            name_to_pos.setdefault(key_fl, pos)
         if team:
-            name_to_team[key] = team
+            name_to_team[key_exact] = team
+            name_to_team.setdefault(key_fl, team)
+
     return name_to_salary, name_to_pos, name_to_team
+
+
+def _fuzzy_lookup(name_key: str, table: Dict[str, float], cache: Dict[str, float], score_cutoff: int = 91) -> float | None:
+    if name_key in table:
+        return table[name_key]
+    # fuzzy match using rapidfuzz
+    if not table:
+        return None
+    cand, score, _ = process.extractOne(name_key, table.keys(), scorer=fuzz.token_sort_ratio, score_cutoff=score_cutoff)
+    if cand:
+        cache[name_key] = table[cand]
+        return table[cand]
+    return None
 
 
 def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -75,9 +105,13 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
 
     name_to_salary, name_to_pos, name_to_team = _salary_index_from_df(salary_df)
     players_map = week_data.get("players_map") or {}
+
     wr = week_data.get("weekly_results") or {}
     wr_root = wr.get("weeklyResults") if isinstance(wr, dict) else None
     franchises = _as_list(wr_root.get("franchise") if isinstance(wr_root, dict) else None)
+
+    # For fuzzy caching
+    fuzzy_cache: Dict[str, float] = {}
 
     starters: List[Dict[str, Any]] = []
     for fr in franchises:
@@ -89,22 +123,30 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
             pid = str(p.get("id") or "").strip()
             pts = _safe_float(p.get("score"), 0.0)
 
-            # Resolve names: players_map → weekly node name → id
+            # Resolve to First Last for display
             pm = players_map.get(pid) or {}
-            nm = pm.get("name") or p.get("name") or pid
-            pos_hint = pm.get("pos") or p.get("position")
-            team_hint = pm.get("team") or p.get("team")
+            pm_name = pm.get("name") or (p.get("name") or "")
+            display_name = _first_last(pm_name)
 
-            # Salary lookup by "Last, First" key
-            key = _clean_key(pm.get("name") or "")
-            salary = name_to_salary.get(key)
-            pos = pos_hint or name_to_pos.get(key)
-            team = team_hint or name_to_team.get(key)
+            # Build lookup keys
+            key_fl = _clean_key(display_name)              # "first last"
+            key_raw = _clean_key(pm_name)                  # may be "last, first"
+            # Try exact/fuzzy salary
+            salary = name_to_salary.get(key_fl)
+            if salary is None:
+                salary = name_to_salary.get(key_raw)
+            if salary is None:
+                salary = _fuzzy_lookup(key_fl, name_to_salary, fuzzy_cache)
+            if salary is None and key_raw != key_fl:
+                salary = _fuzzy_lookup(key_raw, name_to_salary, fuzzy_cache)
 
-            display_name = _first_last(nm)
+            # position / team
+            pos = pm.get("pos") or name_to_pos.get(key_fl) or name_to_pos.get(key_raw) or p.get("position")
+            team = pm.get("team") or name_to_team.get(key_fl) or name_to_team.get(key_raw) or p.get("team")
+
             starters.append({
                 "player_id": pid,
-                "player": display_name,
+                "player": display_name or pid,
                 "pos": pos,
                 "team": team,
                 "salary": salary,
@@ -113,7 +155,7 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
                 "ppk": _ppk(pts, salary) if salary else None,
             })
 
-    # Dedupe top performers by player key
+    # Aggregate top performers (dedupe by player+pos)
     perf: Dict[str, Dict[str, Any]] = {}
     for r in starters:
         key = (r.get("player") or "").lower() + "|" + (r.get("pos") or "")
@@ -152,13 +194,14 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
         team_stats[fid]["pts"] += _safe_float(r["pts"], 0.0)
         if r.get("salary") is not None:
             team_stats[fid]["sal"] += float(r["salary"])
+
     team_eff = []
     for fid, agg in team_stats.items():
         total_pts = round(agg["pts"], 2)
         total_sal = int(agg["sal"]) if agg["sal"] else 0
         team_eff.append({"franchise_id": fid, "total_pts": total_pts, "total_sal": total_sal,
                          "ppk": _ppk(total_pts, agg["sal"]) if agg["sal"] else None})
-    team_eff.sort(key=lambda r: (r["ppk"] or 0.0, r["total_pts"]), reverse=True)
+    team_eff.sort(key=lambda r: ((r["ppk"] or 0.0), r["total_pts"]), reverse=True)
 
     return {
         "top_values": top_values,
