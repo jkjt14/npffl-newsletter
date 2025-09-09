@@ -6,23 +6,17 @@ import random
 from typing import Any, Dict, List, Tuple, Optional
 
 
-# -------------------------
-# Basic helpers
-# -------------------------
+# ---------- helpers ----------
 
 def _as_list(x):
-    if isinstance(x, list):
-        return x
-    if isinstance(x, dict):
-        return [x]
+    if isinstance(x, list): return x
+    if isinstance(x, dict): return [x]
     return []
 
 
 def _fmt2(x) -> str:
-    try:
-        return f"{float(x):.2f}"
-    except Exception:
-        return str(x)
+    try: return f"{float(x):.2f}"
+    except Exception: return str(x)
 
 
 def _name_for(fid: str, fmap: Dict[str, str]) -> str:
@@ -30,7 +24,7 @@ def _name_for(fid: str, fmap: Dict[str, str]) -> str:
 
 
 def _seed_rng(week: int) -> random.Random:
-    h = hashlib.sha1(f"npffl_blog_week_{week}".encode()).hexdigest()
+    h = hashlib.sha1(f"npffl_spicy_week_{week}".encode()).hexdigest()
     return random.Random(int(h[:12], 16))
 
 
@@ -38,60 +32,57 @@ def _choose(rng: random.Random, opts: List[str]) -> str:
     return opts[rng.randrange(0, len(opts))] if opts else ""
 
 
-# -------------------------
-# VP math / cut-lines (top/middle/bottom thirds)
-# -------------------------
+# ---------- VP math: fixed 5/7/5 split ----------
 
-def _vp_cutlines(scores: List[Tuple[str, float]]) -> Tuple[float, float]:
+def _vp_buckets(scores: List[Tuple[str, float]]) -> Dict[str, str]:
     """
-    Return (top_cut, middle_cut) thresholds by splitting scores into thirds, high to low.
-    If 17 teams, top=6, mid=6, bottom=5, etc.
-    Returns the MINIMUM score to be in top, and MINIMUM score to be in middle-or-better.
+    Return {fid: 'top'|'mid'|'bot'} using NPFFL rule: top 5 => 5 VP, next 7 => 2.5 VP, bottom 5 => 0 VP (for 17 teams).
+    Works for other sizes: top = ceil(n*5/17), mid = 7/17, bot = rest.
     """
-    n = len(scores)
-    if n == 0:
-        return (math.inf, math.inf)
-    # sort high->low
-    sorted_scores = sorted([s for _, s in scores], reverse=True)
-    top_n = max(1, n // 3 + (1 if n % 3 > 0 else 0))
-    mid_n = max(1, n // 3)
-    top_cut = sorted_scores[top_n - 1] if len(sorted_scores) >= top_n else sorted_scores[-1]
-    mid_cut = sorted_scores[top_n + mid_n - 1] if len(sorted_scores) >= (top_n + mid_n) else sorted_scores[-1]
-    return (top_cut, mid_cut)
+    n = max(1, len(scores))
+    # Scale 5/7/5 by roster size. For 17: 5,7,5. For other n, proportionally scale and round sensibly.
+    top_n = max(1, round(n * 5 / 17))
+    mid_n = max(1, round(n * 7 / 17))
+    if top_n + mid_n > n:  # guard
+        mid_n = max(1, n - top_n)
+    sorted_scores = sorted(scores, key=lambda t: t[1], reverse=True)
+    out = {}
+    for i, (fid, _) in enumerate(sorted_scores):
+        if i < top_n: out[fid] = "top"
+        elif i < top_n + mid_n: out[fid] = "mid"
+        else: out[fid] = "bot"
+    return out
 
 
-def _vp_villain_and_nearmisses(scores: List[Tuple[str, float]]) -> Tuple[Optional[str], List[Tuple[str, float]]]:
+def _vp_villain_and_misses(scores: List[Tuple[str, float]]) -> Tuple[Optional[str], List[Tuple[str, float]]]:
     """
-    Given (fid, score) list, return:
-      - 'villain' fid: the LAST team inside the middle tier (they 'kept out' the next team).
-      - near-misses: teams that missed middle tier by <= 2.0 pts (configurable threshold).
+    'League Villain' = last team inside the 'mid' bucket (the gatekeeper).
+    Near-miss = any team within 1.5 pts of the mid cut (adjust threshold as desired).
     """
     if not scores:
         return None, []
-    # Determine tiers
-    top_cut, mid_cut = _vp_cutlines(scores)
-    # sort high->low
-    ssorted = sorted(scores, key=lambda t: t[1], reverse=True)
+    n = len(scores)
+    top_n = max(1, round(n * 5 / 17))
+    mid_n = max(1, round(n * 7 / 17))
+    sorted_scores = sorted(scores, key=lambda t: t[1], reverse=True)
+    if top_n + mid_n > n:
+        mid_n = max(1, n - top_n)
+    # mid bucket spans indices [top_n, top_n + mid_n - 1]
+    gate_idx = min(n - 1, top_n + mid_n - 1)
+    villain_fid = sorted_scores[gate_idx][0] if n > gate_idx else None
+    # mid cut threshold = score at gate_idx
+    mid_cut = sorted_scores[gate_idx][1] if n > gate_idx else float("inf")
 
-    # Figure out who is the last team >= mid_cut (the 'gatekeeper')
-    villain = None
-    for fid, sc in reversed(ssorted):  # low->high scan
-        if sc >= mid_cut:
-            villain = fid
-            break
-
-    # near-misses: those just below mid_cut
-    NEAR = 2.0
-    misses = []
-    for fid, sc in ssorted:
-        if sc < mid_cut and (mid_cut - sc) <= NEAR:
-            misses.append((fid, mid_cut - sc))
-    return villain, misses
+    NEAR = 1.5
+    misses: List[Tuple[str, float]] = []
+    for fid, sc in sorted_scores[top_n + mid_n:]:
+        delta = mid_cut - sc
+        if delta >= 0 and delta <= NEAR:
+            misses.append((fid, delta))
+    return villain_fid, misses
 
 
-# -------------------------
-# Survivor / Confidence utilities
-# -------------------------
+# ---------- Confidence / Survivor odds helpers ----------
 
 def _confidence_top3_line(fr: dict) -> str:
     games = _as_list(fr.get("game"))
@@ -103,12 +94,6 @@ def _confidence_top3_line(fr: dict) -> str:
 
 
 def _survivor_summary(week: int, survivor_pool: Dict[str, Any], fmap: Dict[str, str]) -> Dict[str, Any]:
-    """
-    Return:
-      - no_picks: [team names]
-      - pick_counts: {team: count}
-      - picks_by_team: {team: [fid,...]}
-    """
     out = {"no_picks": [], "pick_counts": {}, "picks_by_team": {}}
     sp = survivor_pool.get("survivorPool") if isinstance(survivor_pool, dict) else None
     if not isinstance(sp, dict):
@@ -121,69 +106,58 @@ def _survivor_summary(week: int, survivor_pool: Dict[str, Any], fmap: Dict[str, 
                 wk = w; break
         if not wk or not wk.get("pick"):
             out["no_picks"].append(_name_for(fid, fmap)); continue
-        team = str(wk.get("pick"))
-        out["pick_counts"][team] = out["pick_counts"].get(team, 0) + 1
-        out["picks_by_team"].setdefault(team, []).append(fid)
+        tm = str(wk.get("pick"))
+        out["pick_counts"][tm] = out["pick_counts"].get(tm, 0) + 1
+        out["picks_by_team"].setdefault(tm, []).append(fid)
     return out
 
 
-def _boldest_and_boring_survivor_picks(week: int,
-                                       survivor_pool: Dict[str, Any],
-                                       fmap: Dict[str, str],
-                                       week_odds: Optional[Dict[str, Dict[str, float]]] = None,
-                                       winners: Optional[List[str]] = None) -> Dict[str, Any]:
-    """
-    Identify:
-      - boldest_winner: (team, win_prob, managers) -> lowest win_prob among winning picks (if odds provided)
-        fallback: least popular winning pick
-      - boring_pick: most-picked team overall (regardless of outcome)
-    'week_odds' is optional: { 'ARI': {'win_prob': 0.41}, ... }
-    'winners' optional: list of NFL team codes that actually won (if you want to highlight correctly)
-      If not provided, we just pick "boldest" by lowest win_prob or rarity ignoring outcome.
-    """
-    out = {"boldest": None, "boring": None}
+def _bold_boring_from_odds(week: int,
+                           survivor_pool: Dict[str, Any],
+                           fmap: Dict[str, str],
+                           odds_map: Optional[Dict[str, Dict[str, float]]] = None) -> Dict[str, Any]:
     summ = _survivor_summary(week, survivor_pool, fmap)
     counts = summ["pick_counts"] or {}
     picks_by_team = summ["picks_by_team"]
+    no_picks = summ["no_picks"]
 
-    if not counts:
-        return out
+    out = {"boldest": None, "boring": None, "no_picks": no_picks}
 
-    # boring = most popular pick
-    boring_team = max(counts.items(), key=lambda kv: kv[1])[0]
-    out["boring"] = {"team": boring_team, "count": counts[boring_team], "managers": [ _name_for(fid, fmap) for fid in picks_by_team.get(boring_team, []) ]}
+    if counts:
+        boring_team = max(counts.items(), key=lambda kv: kv[1])[0]
+        out["boring"] = {"team": boring_team, "count": counts[boring_team],
+                         "managers": [_name_for(fid, fmap) for fid in picks_by_team.get(boring_team, [])]}
 
-    # Boldest by odds if available… else rarity
-    candidate_teams = list(counts.keys())
-    if week_odds:
-        with_probs = []
-        for t in candidate_teams:
-            prob = week_odds.get(t, {}).get("win_prob")
-            if isinstance(prob, (int, float)):
-                with_probs.append((t, prob))
-        if with_probs:
-            with_probs.sort(key=lambda kv: kv[1])  # ascending -> boldest first
-            bold_team = with_probs[0][0]
-            out["boldest"] = {
-                "team": bold_team,
-                "win_prob": with_probs[0][1],
-                "managers": [ _name_for(fid, fmap) for fid in picks_by_team.get(bold_team, []) ]
-            }
-            return out
+        # Boldest by *lowest* win_prob (if available), else rarity
+        if odds_map:
+            # try matching codes loosely
+            def _prob_for(code: str) -> Optional[float]:
+                code = (code or "").upper()
+                if code in odds_map and isinstance(odds_map[code], dict):
+                    return odds_map[code].get("win_prob")
+                # Try naive last-3-letter key used in odds_client
+                return odds_map.get(code[:3], {}).get("win_prob")
 
-    # Fallback: rarity
-    rare_team = min(counts.items(), key=lambda kv: kv[1])[0]
-    out["boldest"] = {
-        "team": rare_team,
-        "win_prob": None,
-        "managers": [ _name_for(fid, fmap) for fid in picks_by_team.get(rare_team, []) ]
-    }
+            with_probs = []
+            for team in counts.keys():
+                p = _prob_for(team)
+                if isinstance(p, (int, float)):
+                    with_probs.append((team, p))
+            if with_probs:
+                with_probs.sort(key=lambda kv: kv[1])  # lowest prob = boldest
+                bt = with_probs[0][0]
+                out["boldest"] = {"team": bt, "win_prob": with_probs[0][1],
+                                  "managers": [_name_for(fid, fmap) for fid in picks_by_team.get(bt, [])]}
+        if out["boldest"] is None:
+            # fallback: least popular
+            rare_team = min(counts.items(), key=lambda kv: kv[1])[0]
+            out["boldest"] = {"team": rare_team, "win_prob": None,
+                              "managers": [_name_for(fid, fmap) for fid in picks_by_team.get(rare_team, [])]}
+
     return out
 
 
-# -------------------------
-# Narratives (DFS-first, no drafts/trades/waivers/H2H language)
-# -------------------------
+# ---------- narratives (DFS-only, max spicy) ----------
 
 def opener(week: int, standings: List[dict], efficiency: List[dict], fmap: Dict[str, str]) -> str:
     rng = _seed_rng(week)
@@ -198,123 +172,120 @@ def opener(week: int, standings: List[dict], efficiency: List[dict], fmap: Dict[
     low_name = _name_for(low.get("id","?"), fmap) if low else "Somebody"
     top_pts = _fmt2(top.get("pf", 0))
     low_pts = _fmt2(low.get("pf", 0))
-
-    eff = [e for e in (efficiency or []) if e.get("ppk") is not None]
-    eff_leader = _name_for(eff[0].get("franchise_id","?"), fmap) if eff else top_name
-
     spice = _choose(rng, [
-        "The cap sheet told a story this week—some listened, others doodled in the margins.",
-        "If lineup setting was a pop quiz, a few of you circled ‘All of the above’ and hoped for partial credit.",
-        "This wasn’t a points race; it was a points jailbreak."
+        "Some of you built rocket ships; others built IKEA furniture without the instructions.",
+        "The only thing tighter than the cap this week was a few of those sphincters late Sunday.",
+        "This looked less like a contest and more like a clearance sale on bad decisions."
     ])
-    return f"{top_name} set the pace at **{top_pts}**, while {low_name} brought a pillow to a sprint with **{low_pts}**. {eff_leader} squeezed premium juice out of every slot. {spice}"
+    return f"{top_name} blasted off with **{top_pts}**, while {low_name} brought a sleep mask and hit **{low_pts}**. {spice}"
 
 
 def standings_note(standings: List[dict], fmap: Dict[str, str]) -> str:
     if not standings:
-        return "Standings? Vapor. Commit to some points next time."
+        return "Standings are shy. Be louder next week."
     try:
         st = sorted(standings, key=lambda r: (float(r.get("vp") or 0), float(r.get("pf") or 0)), reverse=True)
     except Exception:
         st = standings
     top3 = ", ".join(_name_for(r.get("id","?"), fmap) for r in st[:3])
-    bottom3 = ", ".join(_name_for(r.get("id","?"), fmap) for r in st[-3:])
-    return f"**Heat check:** {top3} are cruising; {bottom3} are composing apology notes to their bankrolls. Everyone else is stuck in the slow lane."
+    cellar = ", ".join(_name_for(r.get("id","?"), fmap) for r in st[-3:])
+    return f"Up top: {top3}. In the basement: {cellar}. The rest are milling around the food table pretending this was the plan."
 
 
 def scores_note(weekly_results: Dict[str, Any]) -> str:
     wr = weekly_results.get("weeklyResults") if isinstance(weekly_results, dict) else None
     fr = _as_list(wr.get("franchise") if isinstance(wr, dict) else None)
     if not fr:
-        return "The scoreboard ghosted us."
+        return "Scoreboard said ‘out of office.’"
     scores = []
     for f in fr:
-        try:
-            scores.append(float(f.get("score") or 0.0))
-        except Exception:
-            pass
+        try: scores.append(float(f.get("score") or 0.0))
+        except Exception: pass
     if not scores:
-        return "Points hid under the couch cushions."
-    hi, lo = max(scores), min(scores)
-    mid = sum(scores) / len(scores)
-    return f"Range **{_fmt2(lo)} → {_fmt2(hi)}** (avg {_fmt2(mid)}). Tight clumps in the middle made every slot matter."
+        return "Points hid under the couch."
+    return f"Range **{_fmt2(min(scores))} → {_fmt2(max(scores))}** (avg {_fmt2(sum(scores)/len(scores))}). The middle was a mosh pit—every slot mattered."
 
 
-def performers_note(top_performers: List[dict], fmap: Dict[str, str]) -> str:
+def headliners_note(top_performers: List[dict], fmap: Dict[str, str]) -> str:
     if not top_performers:
-        return "Headliners took the night off; benches sighed in relief."
-    # Show 4–5 names with managers
-    head = top_performers[:5]
-    parts = []
-    for r in head:
+        return "Headliners: the stage was empty and so were a few box scores."
+    blips = []
+    for r in top_performers[:5]:
         mgrs = ", ".join(_name_for(fid, fmap) for fid in (r.get("franchise_ids") or []))
-        parts.append(f"{r.get('player')} {r.get('pos') or ''} {r.get('team') or ''} **{_fmt2(r.get('pts'))}** ({mgrs})")
-    return "Headliners: " + "; ".join(parts) + ". If you weren’t riding these, you were towing a trailer uphill."
+        blips.append(f"**{r.get('player')}** {r.get('pos') or ''} {r.get('team') or ''} dropped {_fmt2(r.get('pts'))} ({mgrs})")
+    return " ; ".join(blips) + ". If you weren’t strapped to one of these rockets, you were pushing the car."
 
 
 def values_note(top_values: List[dict], top_busts: List[dict]) -> str:
-    # Avoid the nerd metric; keep vibes DFS-y
-    if not top_values and not top_busts:
-        return "Value vs. Busts: the receipts are sealed. For now."
     lines = []
     if top_values:
-        a = top_values[0]
-        lines.append(f"{a.get('player')} punched above their price tag—felt like you found a loophole.")
+        v = top_values[0]
+        lines.append(f"{v.get('player')} punched so far above their tag it should count as larceny.")
     if top_busts:
         b = top_busts[0]
-        lines.append(f"{b.get('player')} was boutique pricing for gas-station output.")
-    return " ".join(lines)
+        lines.append(f"{b.get('player')} charged steakhouse prices and served microwave leftovers.")
+    return " ".join(lines) if lines else "Values vs. Busts: receipts pending, excuses loading."
 
 
-def efficiency_note(efficiency: List[dict], fmap: Dict[str, str]) -> str:
-    eff = [e for e in efficiency if e.get("ppk") is not None]
+def efficiency_note(eff: List[dict], fmap: Dict[str, str]) -> str:
+    eff = [e for e in eff if e.get("ppk") is not None]
     if not eff:
-        return "The efficiency board is blank. Plausible deniability, noted."
-    best = eff[0]; worst = eff[-1]
-    return f"Efficiency tiers: {_name_for(best.get('franchise_id','?'), fmap)} ran a clinic; {_name_for(worst.get('franchise_id','?'), fmap)} turned cap into compost."
+        return "Efficiency board wouldn’t snitch this week."
+    return f"{_name_for(eff[0].get('franchise_id','?'), fmap)} ran a clinic; {_name_for(eff[-1].get('franchise_id','?'), fmap)} lit cash on fire."
 
 
-def vp_drama_note(weekly_results: Dict[str, Any], fmap: Dict[str, str]) -> Dict[str, Any]:
-    """
-    Build the VP drama story:
-      - villain: team that was last inside the middle tier (the gatekeeper)
-      - near_misses: teams that missed middle tier by <=2 pts with delta
-      - summary line for prose
-    """
+def vp_drama(weekly_results: Dict[str, Any], fmap: Dict[str, str]) -> str:
     wr = weekly_results.get("weeklyResults") if isinstance(weekly_results, dict) else None
     fr = _as_list(wr.get("franchise") if isinstance(wr, dict) else None)
     if not fr:
-        return {"line": "VP tiers: nothing to see here.", "villain": None, "misses": []}
-    scores = []
+        return "VP cut-lines took a vacation."
+    scores: List[Tuple[str, float]] = []
     for f in fr:
         fid = f.get("id")
-        try:
-            scores.append((fid, float(f.get("score") or 0.0)))
-        except Exception:
-            scores.append((fid, 0.0))
-    villain, misses = _vp_villain_and_nearmisses(scores)
-    villain_name = _name_for(villain, fmap) if villain else None
-    miss_lines = []
+        try: sc = float(f.get("score") or 0.0)
+        except Exception: sc = 0.0
+        scores.append((fid, sc))
+    villain, misses = _vp_villain_and_misses(scores)
+    parts = []
+    if villain:
+        parts.append(f"**League Villain:** {_name_for(villain, fmap)} grabbed the last chair in the 2.5 VP lounge and locked the door.")
     for fid, delta in misses:
-        miss_lines.append(f"{_name_for(fid, fmap)} missed middle tier by **{_fmt2(delta)}**")
-    line = ""
-    if villain_name and miss_lines:
-        line = f"**League Villain:** {villain_name} slammed the gate on the middle-tier line. " \
-               f"{'; '.join(miss_lines)}."
-    elif villain_name:
-        line = f"**League Villain:** {villain_name} held the last middle-tier chair; everyone else stood."
-    else:
-        line = "VP tiers were merciful this week. No heartbreakers—somehow."
-    return {"line": line, "villain": villain_name, "misses": misses}
+        parts.append(f"{_name_for(fid, fmap)} missed the middle tier by **{_fmt2(delta)}**. That’s a bad beat and a worse lineup.")
+    return " ".join(parts) if parts else "VP drama stayed quiet—this time."
 
 
-def confidence_note(week: int, pool_nfl: Dict[str, Any], fmap: Dict[str, str]) -> str:
+def fraud_watch(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
+    """Team with decent points but awful efficiency (high salary burn)."""
+    eff = values.get("team_efficiency") or []
+    if not eff:
+        return "Fraud Watch: inconclusive. Everyone’s either good or equally bad."
+    # pick team with high points but *lowest* ppk among top half by points
+    top_half = sorted(eff, key=lambda r: r.get("total_pts", 0.0), reverse=True)[: max(1, len(eff)//2)]
+    worst = sorted(top_half, key=lambda r: (r.get("ppk") or 0.0))[0]
+    return f"**Fraud Watch 🔥**: {_name_for(worst.get('franchise_id','?'), fmap)} posted {_fmt2(worst.get('total_pts'))} but turned cap into confetti. Looks rich, spends dumb."
+
+
+def dfs_jail(values: Dict[str, Any], fmap: Dict[str, str]) -> str:
+    """Zero/near-zero starters → line up for booking."""
+    # Look for players with <= 1.0 point started; name the manager with the most of those.
+    worst_count: Dict[str, int] = {}
+    for r in (values.get("by_pos") or {}).values():
+        for row in r:
+            if (row.get("pts") or 0.0) <= 1.0:
+                fid = row.get("franchise_id")
+                worst_count[fid] = worst_count.get(fid, 0) + 1
+    if not worst_count:
+        return "DFS Jail 🚔: surprisingly empty. Parole for everyone."
+    perp = max(worst_count.items(), key=lambda kv: kv[1])[0]
+    return f"DFS Jail 🚔: {_name_for(perp, fmap)} started more ghosts than players. Community service: read the injury reports."
+
+
+def confidence_spice(week: int, pool_nfl: Dict[str, Any], fmap: Dict[str, str]) -> str:
     pr = pool_nfl.get("poolPicks") if isinstance(pool_nfl, dict) else None
     if not isinstance(pr, dict):
-        return "Confidence: questionable swagger, interesting receipts."
-    parts = []
-    no_picks = []
+        return "Confidence: bravado with a side of denial."
     best_sum, best_id = None, None
+    no_picks = []
     for fr in _as_list(pr.get("franchise")):
         fid = fr.get("id")
         wk = None
@@ -332,102 +303,71 @@ def confidence_note(week: int, pool_nfl: Dict[str, Any], fmap: Dict[str, str]) -
                 best_sum, best_id = s, fid
         except Exception:
             pass
-    if best_id is not None:
-        parts.append(f"{_name_for(best_id, fmap)} stacked the heaviest numbers on their ‘locks’ and didn’t blink.")
-    if no_picks:
-        parts.append(f"No-submit parade: {', '.join(no_picks)}.")
-    return " ".join(parts) if parts else "Confidence: bravado met reality; results pending appeal."
-
-
-def survivor_note(week: int,
-                  survivor_pool: Dict[str, Any],
-                  fmap: Dict[str, str],
-                  week_odds: Optional[Dict[str, Dict[str, float]]] = None,
-                  winners: Optional[List[str]] = None) -> Dict[str, Any]:
-    """
-    Return:
-      - line: narrative
-      - boldest: dict or None
-      - boring: dict or None
-      - no_picks: list of names
-    """
-    summ = _survivor_summary(week, survivor_pool, fmap)
-    bold_and_boring = _boldest_and_boring_survivor_picks(week, survivor_pool, fmap, week_odds, winners)
-    no_picks = summ["no_picks"]
-
     parts = []
-    if bold_and_boring.get("boldest"):
-        b = bold_and_boring["boldest"]
-        if b.get("win_prob") is not None:
-            parts.append(f"Boldest lifeline: **{b['team']}** (low public confidence) — played by {', '.join(b['managers'])}.")
-        else:
-            parts.append(f"Boldest lifeline: **{b['team']}** (rare pick) — played by {', '.join(b['managers'])}.")
-    if bold_and_boring.get("boring"):
-        bb = bold_and_boring["boring"]
-        parts.append(f"Boring consensus: **{bb['team']}** ({bb['count']} entries). Safety blanket energy.")
+    if best_id is not None:
+        parts.append(f"{_name_for(best_id, fmap)} stacked the fattest numbers up top and didn’t blink.")
     if no_picks:
-        parts.append(f"No-pick stroll of shame: {', '.join(no_picks)}.")
-    line = " ".join(parts) if parts else "Survivor: everyone toe-tapped through without face-planting."
-    return {"line": line, "boldest": bold_and_boring.get("boldest"), "boring": bold_and_boring.get("boring"), "no_picks": no_picks}
+        parts.append(f"No-submit roll call: {', '.join(no_picks)}.")
+    return " ".join(parts) if parts else "Confidence: big talk, mixed receipts."
 
 
-# -------------------------
-# Public API
-# -------------------------
+def survivor_spice(week: int, survivor_pool: Dict[str, Any], fmap: Dict[str, str], odds: Optional[Dict[str, Dict[str, float]]]) -> str:
+    bb = _bold_boring_from_odds(week, survivor_pool, fmap, odds)
+    parts = []
+    if bb.get("boldest"):
+        b = bb["boldest"]
+        if b.get("win_prob") is not None:
+            parts.append(f"**Boldest Lifeline:** {b['team']} (low book confidence) — {', '.join(b['managers'])}.")
+        else:
+            parts.append(f"**Boldest Lifeline:** {b['team']} (rare pick) — {', '.join(b['managers'])}.")
+    if bb.get("boring"):
+        t = bb["boring"]
+        parts.append(f"**Boring Consensus:** {t['team']} ({t['count']} entries). Safety blanket energy.")
+    if bb.get("no_picks"):
+        parts.append(f"**No-Pick Parade:** {', '.join(bb['no_picks'])}.")
+    return " ".join(parts) if parts else "Survivor: everyone tiptoed past the landmines."
 
-def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], week_data: Dict[str, Any]) -> Dict[str, Any]:
+
+# ---------- public API ----------
+
+def build_roasts(cfg: Dict[str, Any], week: int, values: Dict[str, Any], week_data: Dict[str, Any]) -> Dict[str, Any]:
     fmap = (cfg or {}).get("franchise_names") or {}
-    standings: List[dict] = (week_data or {}).get("standings") or []
-    weekly_results: Dict[str, Any] = (week_data or {}).get("weekly_results") or {}
-    top_values: List[dict] = (value_results or {}).get("top_values") or []
-    top_busts: List[dict]  = (value_results or {}).get("top_busts") or []
-    top_performers: List[dict] = (value_results or {}).get("top_performers") or []
-    efficiency: List[dict] = (value_results or {}).get("team_efficiency") or []
-    pool_nfl: Dict[str, Any] = (week_data or {}).get("pool_nfl") or {}
-    survivor_pool: Dict[str, Any] = (week_data or {}).get("survivor_pool") or {}
-
-    # Optional odds for Survivor (if main passes it)
-    week_odds: Optional[Dict[str, Dict[str, float]]] = (week_data or {}).get("odds")
-    winners: Optional[List[str]] = (week_data or {}).get("winners")  # optional future hook
+    standings = (week_data or {}).get("standings") or []
+    wr = (week_data or {}).get("weekly_results") or {}
+    pool_nfl = (week_data or {}).get("pool_nfl") or {}
+    survivor_pool = (week_data or {}).get("survivor_pool") or {}
+    odds = (week_data or {}).get("odds") or {}
 
     notes = {
-        "opener": opener(week, standings, efficiency, fmap),
+        "opener": opener(week, standings, values.get("team_efficiency") or [], fmap),
         "standings": standings_note(standings, fmap),
-        "scores": scores_note(weekly_results),
-        "performers": performers_note(top_performers, fmap),
-        "values": values_note(top_values, top_busts),
-        "efficiency": efficiency_note(efficiency, fmap),
+        "scores": scores_note(wr),
+        "performers": headliners_note(values.get("top_performers") or [], fmap),
+        "values": values_note(values.get("top_values") or [], values.get("top_busts") or []),
+        "efficiency": efficiency_note(values.get("team_efficiency") or [], fmap),
+        "vp": vp_drama(wr, fmap),
+        "confidence": confidence_spice(week, pool_nfl, fmap),
+        "survivor": survivor_spice(week, survivor_pool, fmap, odds),
+        # rotating segments
+        "fraud_watch": fraud_watch(values, fmap),
+        "dfs_jail": dfs_jail(values, fmap),
     }
 
-    # VP drama / villain
-    vp = vp_drama_note(weekly_results, fmap)
-    notes["vp"] = vp.get("line", "")
-
-    # Confidence + Survivor
-    notes["confidence"] = confidence_note(week, pool_nfl, fmap)
-    sv = survivor_note(week, survivor_pool, fmap, week_odds, winners)
-    notes["survivor"] = sv.get("line", "")
-
-    # Trophies (short/punchy)
+    # Trophies (quick hits)
     trophies: Dict[str, str] = {}
-    if top_values:
-        a = top_values[0]
-        trophies["coupon_clipper"] = f"{a.get('player')} was premium output at a friendly tag."
-    if top_busts:
-        b = top_busts[0]
-        trophies["dumpster_fire"] = f"{b.get('player')} charged steakhouse prices and served soggy fries."
-    # modest-price hero (<= $6K) by raw points
-    modest = [r for r in (top_values + top_busts) if r.get('salary') and float(r['salary']) <= 6000]
-    if modest:
-        best = sorted(modest, key=lambda r: r.get("pts") or 0, reverse=True)[0]
-        trophies["galaxy_brain"] = f"{best.get('player')} turned small change into loud points."
-    # Walk of Shame — lowest score
-    wr = weekly_results.get("weeklyResults") if isinstance(weekly_results, dict) else None
-    frs = _as_list(wr.get("franchise") if isinstance(wr, dict) else None)
+    tv = values.get("top_values") or []
+    tb = values.get("top_busts") or []
+    if tv:
+        trophies["coupon_clipper"] = f"{tv[0].get('player')} was premium output at a thrift-store tag."
+    if tb:
+        trophies["dumpster_fire"] = f"{tb[0].get('player')} burned a hole in the cap and in your soul."
+    # Walk of Shame (lowest score)
+    wr_root = wr.get("weeklyResults") if isinstance(wr, dict) else None
+    frs = _as_list(wr_root.get("franchise") if isinstance(wr_root, dict) else None)
     if frs:
         worst = sorted(frs, key=lambda f: float(f.get("score") or 0))[0]
-        trophies["walk_of_shame"] = f"{_name_for(worst.get('id','?'), fmap)} tripped over { _fmt2(worst.get('score')) }."
-    # Banana Peel — biggest stacked ranks
+        trophies["walk_of_shame"] = f"{_name_for(worst.get('id','?'), fmap)} tripped over {_fmt2(worst.get('score'))}."
+    # Banana Peel — fattest top-3 confidence stack
     pr = pool_nfl.get("poolPicks") if isinstance(pool_nfl, dict) else None
     if isinstance(pr, dict):
         best_sum, best_id = None, None
@@ -443,6 +383,6 @@ def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], 
                     pass
                 break
         if best_id is not None:
-            trophies["banana_peel"] = f"{_name_for(best_id, fmap)} piled the biggest numbers on their ‘locks’ and dared the football gods."
+            trophies["banana_peel"] = f"{_name_for(best_id, fmap)} stacked the biggest numbers and dared the football gods."
 
     return {"notes": notes, **trophies}
