@@ -7,17 +7,13 @@ import markdown as mdlib
 
 
 def _as_list(x):
-    if isinstance(x, list):
-        return x
-    if isinstance(x, dict):
-        return [x]
+    if isinstance(x, list): return x
+    if isinstance(x, dict): return [x]
     return []
 
 
 def _name_for(fid: str, fmap: Dict[str, str]) -> str:
-    if not fid:
-        return "unknown"
-    return fmap.get(str(fid), str(fid))
+    return fmap.get(str(fid), str(fid)) if fid else "unknown"
 
 
 def _h1(t: str): return f"# {t}\n\n"
@@ -26,40 +22,52 @@ def _h3(t: str): return f"### {t}\n\n"
 def _p(t: str):  return f"{t}\n\n"
 
 
-def _render_standings(standings: Any, fmap: Dict[str, str], note: str) -> str:
-    rows: List[Tuple[str, float, float]] = []
+def _logo_md(fid: str, name: str, assets_cfg: Dict[str, Any]) -> str:
+    if not assets_cfg.get("use_franchise_logos"):
+        return name
+    logos_dir = assets_cfg.get("logos_dir") or "assets/franchises"
+    w = int(assets_cfg.get("logo_width_px") or 24)
+    p = Path(logos_dir) / f"{fid}.png"
+    if p.exists():
+        return f'<img src="{p.as_posix()}" width="{w}"/> {name}'
+    return name
+
+
+def _render_standings(standings: Any, fmap: Dict[str, str], note: str, assets_cfg: Dict[str, Any]) -> str:
+    rows: List[Tuple[str, float, float, str]] = []
     for row in _as_list(standings):
         fid = row.get("id") or ""
-        name = (row.get("fname") or row.get("name")) or _name_for(fid, fmap)
+        base = (row.get("fname") or row.get("name")) or _name_for(fid, fmap)
+        name = _logo_md(fid, base, assets_cfg)
         pf = float(row.get("pf") or 0)
         vp = float(row.get("vp") or 0)
-        rows.append((name, pf, vp))
+        rows.append((name, pf, vp, fid))
     rows.sort(key=lambda t: (t[2], t[1]), reverse=True)
     out = _h2("Standings (Week-to-date)")
     if note: out += _p(note)
     if not rows:
         return out + _p("_No standings data available._")
     out += "Team | PF | VP\n---|---:|---:\n"
-    for name, pf, vp in rows:
+    for name, pf, vp, _ in rows:
         out += f"{name} | {pf:.2f} | {vp:g}\n"
     out += "\n"
     return out
 
 
-def _render_weekly_scores(weekly_results: Any, fmap: Dict[str, str], note: str, vp_note: str) -> str:
+def _render_weekly_scores(weekly_results: Any, fmap: Dict[str, str], note: str, vp_note: str, assets_cfg: Dict[str, Any]) -> str:
     out = _h2("Weekly Scores")
     if note: out += _p(note)
-    if not isinstance(weekly_results, dict):
-        return out + _p("_No weekly results found._")
-    wr = weekly_results.get("weeklyResults") or {}
-    franchises = _as_list(wr.get("franchise"))
+    wr = weekly_results.get("weeklyResults") if isinstance(weekly_results, dict) else None
+    franchises = _as_list(wr.get("franchise") if isinstance(wr, dict) else None)
     if not franchises:
         return out + _p("_No weekly results found._")
     team_rows: List[Tuple[str, float]] = []
     for f in franchises:
         fid = f.get("id") or "unknown"
+        base = _name_for(fid, fmap)
+        name = _logo_md(fid, base, assets_cfg)
         score = float(f.get("score") or 0)
-        team_rows.append((_name_for(fid, fmap), score))
+        team_rows.append((name, score))
     team_rows.sort(key=lambda t: t[1], reverse=True)
     out += "Team | Score\n---|---:\n"
     for name, sc in team_rows:
@@ -190,6 +198,7 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     tz = context.get("timezone", "America/New_York")
     outputs = context.get("outputs") or {}
     make_html = bool(outputs.get("make_html", True))
+    assets_cfg = context.get("assets") or {}
 
     data = context.get("data") or {}
     fmap = context.get("franchise_map") or {}
@@ -204,16 +213,22 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     md = []
     md.append(_h1(title))
     md.append(_p(f"**Week {week} · {tz}**"))
-    if notes.get("opener"):
-        md.append(_p(notes["opener"]))
+    if notes.get("opener"): md.append(_p(notes["opener"]))
 
-    md.append(_render_standings(standings, fmap, notes.get("standings","")))
-    md.append(_render_weekly_scores(weekly_results, fmap, notes.get("scores",""), notes.get("vp","")))
+    md.append(_render_standings(standings, fmap, notes.get("standings",""), assets_cfg))
+    md.append(_render_weekly_scores(weekly_results, fmap, notes.get("scores",""), notes.get("vp",""), assets_cfg))
     md.append(_render_top_performers(values, fmap, notes.get("performers","")))
     md.append(_render_values(values, fmap, notes.get("values","")))
     md.append(_render_power_rankings(values, fmap, notes.get("efficiency","")))
     md.append(_render_confidence(pool_nfl, week, fmap, notes.get("confidence","")))
     md.append(_render_survivor(survivor, week, fmap, notes.get("survivor","")))
+
+    # Rotating spicy segments
+    md.append(_h2("Fraud Watch 🔥"))
+    if notes.get("fraud_watch"): md.append(_p(notes["fraud_watch"]))
+
+    md.append(_h2("DFS Jail 🚔"))
+    if notes.get("dfs_jail"): md.append(_p(notes["dfs_jail"]))
 
     # Trophies — concise
     roasts = data.get("roasts") or {}
@@ -233,7 +248,7 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     md_path.write_text(text, encoding="utf-8")
 
     if make_html:
-        html_text = mdlib.markdown(text, extensions=["tables", "fenced_code"])
+        html_text = mdlib.markdown(text, extensions=["tables", "fenced_code", "attr_list"])
         (Path(output_dir) / f"NPFFL_Week_{int(week):02d}.html").write_text(html_text, encoding="utf-8")
 
     return str(md_path)
