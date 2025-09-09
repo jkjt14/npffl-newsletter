@@ -1,317 +1,147 @@
 from __future__ import annotations
 
-import os
-import sys
 import argparse
-import textwrap
-import glob
-import re
+import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import yaml  # requires PyYAML
+import yaml
+import pandas as pd
 
-# keep this import/alias — avoids ImportError if function is named post_to_slack
-from .post_outputs import post_to_slack as post_slack, mailchimp_send
+from .mfl_client import MFLClient
+from .load_salary import load_salary
+from .fetch_week import fetch_week_data
+from .value_engine import compute_values
+from .roastbook import build_roasts
 from .newsletter import render_newsletter
 
 
-# -----------------------------
-# Config / Week Resolution
-# -----------------------------
-
-def load_config(path: str = "config.yaml") -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+def _load_yaml(p: Path) -> Dict[str, Any]:
+    return yaml.safe_load(p.read_text(encoding="utf-8")) if p.exists() else {}
 
 
-def resolve_week(args_week: Optional[str], cfg: Dict[str, Any]) -> int:
-    if args_week and args_week.strip().isdigit():
-        return int(args_week.strip())
-
-    inputs = (cfg.get("inputs") or {})
-
-    wk = inputs.get("week")
-    if isinstance(wk, int):
-        return wk
-    if isinstance(wk, str) and wk.strip().isdigit():
-        return int(wk.strip())
-
-    strat = inputs.get("week_strategy", "auto")
-    if isinstance(strat, int):
-        return strat
-    if isinstance(strat, str) and strat.strip().isdigit():
-        return int(strat.strip())
-
-    salary_glob = inputs.get("salary_glob", "data/salaries/*Salary.xlsx")
-    weeks: list[int] = []
-    for p in glob.glob(salary_glob):
-        m = re.search(r"(\d{4})_(\d{2})_Salary\.xlsx$", Path(p).name)
-        if m:
-            weeks.append(int(m.group(2)))
-    if weeks:
-        return max(weeks)
-
-    return 1
-
-
-# -----------------------------
-# Auth / Clients
-# -----------------------------
-
-def build_auth_from_env() -> Dict[str, Optional[str]]:
-    return {
-        "username": os.getenv("MFL_USERNAME"),
-        "password": os.getenv("MFL_PASSWORD"),
-    }
-
-
-def make_mfl_client(cfg: Dict[str, Any], auth: Dict[str, Optional[str]]):
-    try:
-        from .mfl_client import MFLClient  # type: ignore
-    except Exception as e:
-        print(f"ERROR: mfl_client import failed: {e}", file=sys.stderr)
+def _try_int(x: Optional[str]) -> Optional[int]:
+    if x is None:
         return None
-
-    league_id = cfg.get("league_id")
-    if not league_id:
-        print("ERROR: config.yaml missing 'league_id'", file=sys.stderr)
-        return None
-
-    host = os.getenv("MFL_HOST") or None
-    year_env = os.getenv("MFL_YEAR")
-    year = int(year_env) if year_env and year_env.isdigit() else None
-
-    try:
-        return MFLClient(
-            league_id=league_id,
-            username=auth.get("username"),
-            password=auth.get("password"),
-            host=host,
-            year=year,
-            user_agent=os.getenv("MFL_USER_AGENT", "NPFFLNewsletter/1.0 (automation)"),
-        )
-    except Exception as e:
-        print(f"ERROR: failed to construct MFLClient: {e}", file=sys.stderr)
-        return None
+    s = str(x).strip()
+    return int(s) if s.isdigit() else None
 
 
-# -----------------------------
-# Data Loading Helpers
-# -----------------------------
-
-def load_salary_frame(cfg: Dict[str, Any]):
-    try:
-        from .load_salary import load_salary  # type: ignore
-    except Exception:
-        print("NOTE: load_salary module not available; continuing without salaries.")
-        return None
-
-    pattern = (cfg.get("inputs") or {}).get("salary_glob", "data/salaries/*Salary.xlsx")
-    try:
-        return load_salary(pattern)
-    except Exception as e:
-        print(f"WARNING: load_salary failed: {e}", file=sys.stderr)
-        return None
-
-
-def fetch_week_data(cfg: Dict[str, Any], week: int, client) -> Dict[str, Any]:
-    try:
-        import importlib
-        fw = importlib.import_module(__package__ + ".fetch_week")  # type: ignore
-    except Exception:
-        print("NOTE: fetch_week module not available; continuing with empty week data.")
-        return {}
-
-    fn = getattr(fw, "fetch_week_data", None)
-    if callable(fn):
-        try:
-            return fn(cfg.get("league_id"), week, client)
-        except Exception as e:
-            print(f"WARNING: fetch_week_data failed: {e}", file=sys.stderr)
-            return {}
-
-    for alt in ("fetch_week", "get_week"):
-        f = getattr(fw, alt, None)
-        if callable(f):
+def _load_optional_odds(year: int, week: int) -> Dict[str, Dict[str, float]]:
+    """
+    Load simple odds CSV if present.
+    Expected columns (case-insensitive): team, win_prob (0-1 or 0-100).
+    Locations tried:
+      data/odds/{year}_week_{week:02d}_odds.csv
+      data/odds/week_{week:02d}_odds.csv
+    """
+    paths = [
+        Path(f"data/odds/{year}_week_{week:02d}_odds.csv"),
+        Path(f"data/odds/week_{week:02d}_odds.csv"),
+    ]
+    for p in paths:
+        if p.exists():
             try:
-                return f(cfg.get("league_id"), week, client)  # type: ignore[misc]
+                df = pd.read_csv(p)
+                cols = {c.lower().strip(): c for c in df.columns}
+                team_c = cols.get("team")
+                prob_c = cols.get("win_prob")
+                if not team_c or not prob_c:
+                    continue
+                out = {}
+                for _, r in df.iterrows():
+                    t = str(r.get(team_c) or "").strip().upper()
+                    if not t:
+                        continue
+                    prob = r.get(prob_c)
+                    try:
+                        prob = float(prob)
+                        if prob > 1.0:
+                            prob = prob / 100.0
+                    except Exception:
+                        continue
+                    out[t] = {"win_prob": prob}
+                if out:
+                    print(f"[odds] loaded {len(out)} teams from {p}")
+                    return out
             except Exception as e:
-                print(f"WARNING: {alt} failed: {e}", file=sys.stderr)
-                break
+                print(f"[odds] failed to read {p}: {e}")
     return {}
 
 
-def compute_values(salary_df, week_data) -> Dict[str, Any]:
-    try:
-        import importlib
-        ve = importlib.import_module(__package__ + ".value_engine")  # type: ignore
-    except Exception:
-        print("NOTE: value_engine module not available; skipping value computation.")
-        return {}
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--week", default="")
+    args = ap.parse_args()
 
-    for fn_name in ("compute_values", "compute_value", "run"):
-        fn = getattr(ve, fn_name, None)
-        if callable(fn):
-            try:
-                return fn(salary_df, week_data)  # type: ignore[misc]
-            except Exception as e:
-                print(f"WARNING: value_engine.{fn_name} failed: {e}", file=sys.stderr)
-                break
+    cfg = _load_yaml(Path("config.yaml"))
+    year = int(cfg.get("year", 2025))
+    league_id = str(cfg.get("league_id", ""))
+    tz = cfg.get("timezone", "America/New_York")
+    inputs = cfg.get("inputs", {})
+    outputs = cfg.get("outputs", {})
+    salary_glob = inputs.get("salary_glob", "data/salaries/2025_*_Salary.xlsx")
+    out_dir = outputs.get("dir", "build")
 
-    print("NOTE: No usable function found in value_engine; continuing without values.")
-    return {}
+    # Determine week
+    week = _try_int(args.week)
+    if week is None:
+        # If "auto": choose latest completed week from API results; fallback to 1
+        week = 1
 
+    # Auth from env/secrets (username/password or API key/cookie handled in client)
+    client = MFLClient(league_id=league_id, year=year, timezone=tz)
 
-def build_roasts(cfg: Dict[str, Any], week: int, value_results: Dict[str, Any], week_data: Dict[str, Any]) -> Dict[str, Any]:
-    try:
-        import importlib
-        rb = importlib.import_module(__package__ + ".roastbook")  # type: ignore
-    except Exception:
-        print("NOTE: roastbook module not available; skipping roasts.")
-        return {}
+    # Fetch raw week JSON (weekly results, standings, pools, players map)
+    week_data = fetch_week_data(client, week=week)
 
-    for fn_name in ("build_roasts", "generate_roasts", "run"):
-        fn = getattr(rb, fn_name, None)
-        if callable(fn):
-            try:
-                return fn(cfg, week, value_results, week_data)  # type: ignore[misc]
-            except Exception as e:
-                print(f"WARNING: roastbook.{fn_name} failed: {e}", file=sys.stderr)
-                break
+    # Load salary file
+    salary_df = load_salary(salary_glob)
 
-    print("NOTE: No usable function found in roastbook; continuing without roasts.")
-    return {}
+    # Compute values, busts, efficiency, headliners
+    values = compute_values(salary_df, {
+        "weekly_results": week_data.get("weekly_results"),
+        "players_map": week_data.get("players_map"),
+    })
 
+    # Optional odds
+    odds_map = _load_optional_odds(year, week)
+    if odds_map:
+        week_data["odds"] = odds_map
 
-def _merge_franchise_maps(detected: Dict[str, str], overrides: Dict[str, str]) -> Dict[str, str]:
-    merged = dict(detected or {})
-    for k, v in (overrides or {}).items():
-        if k and v:
-            merged[str(k)] = str(v)
-    return merged
-
-
-# -----------------------------
-# Entry
-# -----------------------------
-
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description=textwrap.dedent(
-            """\
-            NPFFL Weekly Newsletter Orchestrator
-
-            Typical usage (auto week from config or salaries):
-              python -m src.main
-
-            Force a specific week:
-              python -m src.main --week 1
-            """
-        ),
-    )
-    parser.add_argument("--config", default=os.getenv("CONFIG", "config.yaml"))
-    parser.add_argument("--week", default=os.getenv("WEEK", ""))
-    args = parser.parse_args()
-
-    cfg = load_config(args.config)
-    out_cfg = (cfg.get("outputs") or {})
-    out_dir = out_cfg.get("dir", "build")
-    week = resolve_week(args.week, cfg)
-
-    print(f"[main] Year={cfg.get('year')} League={cfg.get('league_id')} Week={week}")
-
-    # Auth + client
-    auth = build_auth_from_env()
-    client = make_mfl_client(cfg, auth)
-
-    # Data pipeline
-    salary_df = load_salary_frame(cfg)
-    week_data = fetch_week_data(cfg, week, client)
-
-    # --- Debug: quick counts & raw JSON dumps to artifacts (safe placement) ---
-    try:
-        import json
-        dbg_dir = Path(out_dir) / "debug"
-        dbg_dir.mkdir(parents=True, exist_ok=True)
-
-        wr = week_data.get("weekly_results") or {}
-        st_list = week_data.get("standings") or []
-        pool_nfl = week_data.get("pool_nfl") or {}
-        survivor = week_data.get("survivor_pool") or {}
-        fr_map_detected = week_data.get("franchise_map_detected") or {}
-
-        print("[debug] weekly_results keys:", list(wr.keys()) if isinstance(wr, dict) else type(wr).__name__)
-        print("[debug] standings_count:", len(st_list) if isinstance(st_list, list) else 0)
-        print("[debug] franchise_map_detected:", len(fr_map_detected))
-
-        (dbg_dir / f"weekly_results_w{week}.json").write_text(json.dumps(wr, indent=2), encoding="utf-8")
-        (dbg_dir / "standings.json").write_text(json.dumps(st_list, indent=2), encoding="utf-8")
-        (dbg_dir / "pool_nfl.json").write_text(json.dumps(pool_nfl, indent=2), encoding="utf-8")
-        (dbg_dir / "survivor_pool.json").write_text(json.dumps(survivor, indent=2), encoding="utf-8")
-        (dbg_dir / "franchise_map_detected.json").write_text(json.dumps(fr_map_detected, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[debug] failed to write debug artifacts: {e}", file=sys.stderr)
-
-    # Values + Roasts
-    value_results = compute_values(salary_df, week_data)
-    roasts = build_roasts(cfg, week, value_results, week_data)
-
-    # Merge franchise name sources (overrides win)
-    overrides = (cfg.get("franchise_names") or {})  # user-provided mapping
-    franchise_map = _merge_franchise_maps(week_data.get("franchise_map_detected") or {}, overrides)
-
-    # Build rendering context
-    context: Dict[str, Any] = {
-        "year": cfg.get("year"),
-        "league_id": cfg.get("league_id"),
-        "timezone": cfg.get("timezone", "America/New_York"),
-        "newsletter": cfg.get("newsletter", {}),
-        "outputs": cfg.get("outputs", {}),
-        "trophies": cfg.get("trophies", []),
-        "week": week,
-        "franchise_map": franchise_map,
-        "data": {
-            "salary_rows": int(getattr(salary_df, "shape", [0, 0])[0]) if salary_df is not None else 0,
-            "salary_df": salary_df,
-            "week": week_data or {},
-            "weekly_results": week_data.get("weekly_results") or {},
-            "values": value_results or {},
-            "roasts": roasts or {},
-            "standings": (week_data or {}).get("standings"),
+    # Build roasts/notes/trophies (deep commentary)
+    roasts = build_roasts(
+        {"franchise_names": week_data.get("franchise_names")},
+        week,
+        values,
+        {
+            "standings": week_data.get("standings_rows"),
+            "weekly_results": week_data.get("weekly_results"),
             "pool_nfl": week_data.get("pool_nfl"),
             "survivor_pool": week_data.get("survivor_pool"),
+            "odds": week_data.get("odds", {}),
+        },
+    )
+
+    # Assemble context for newsletter renderer
+    context = {
+        "timezone": tz,
+        "newsletter": cfg.get("newsletter", {}),
+        "outputs": cfg.get("outputs", {}),
+        "franchise_map": week_data.get("franchise_names", {}),
+        "data": {
+            "standings": week_data.get("standings_rows"),
+            "weekly_results": week_data.get("weekly_results"),
+            "values": values,
+            "pool_nfl": week_data.get("pool_nfl"),
+            "survivor_pool": week_data.get("survivor_pool"),
+            "roasts": {"notes": roasts, **roasts},  # notes + trophies live together
         },
     }
 
-    # Render newsletter (Markdown + optional HTML)
-    md_path = render_newsletter(context=context, output_dir=out_dir, week=week)
-    print(f"[main] Wrote newsletter to {md_path}")
-
-    # Slack summary (fail-soft if webhook missing)
-    push_to_slack = bool(out_cfg.get("push_to_slack", False))
-    if push_to_slack:
-        title = (cfg.get("newsletter") or {}).get("title", "NPFFL Weekly Roast")
-        lines = [
-            f"{title} — Week {week}",
-            Path(md_path).name,
-        ]
-        if value_results:
-            tv = len(value_results.get("top_values") or [])
-            tb = len(value_results.get("top_busts") or [])
-            lines.append(f"Top values: {tv} | Busts: {tb}")
-        if salary_df is not None:
-            try:
-                lines.append(f"Salary rows: {getattr(salary_df, 'shape', [0])[0]}")
-            except Exception:
-                pass
-        summary = "\n".join(lines)
-        try:
-            post_slack(summary)
-            print("[main] Posted summary to Slack.")
-        except Exception as e:
-            print(f"WARNING: Slack post failed: {e}", file=sys.stderr)
+    # Render newsletter
+    path = render_newsletter(context, output_dir=out_dir, week=week)
+    print(f"[out] Wrote: {path}")
 
 
 if __name__ == "__main__":
