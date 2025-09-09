@@ -3,44 +3,64 @@ from __future__ import annotations
 from typing import Any, Dict
 
 
+def _normalize_standings(st: Any):
+    """
+    Reduce common MFL shapes to a simple list of teams.
+    Expected patterns:
+      {"leagueStandings":{"franchise":[{...}, ...]}}  OR  {"standings":[...]}
+    """
+    if not isinstance(st, dict):
+        return []
+    ls = st.get("leagueStandings") or st.get("standings") or {}
+    if isinstance(ls, dict):
+        fr_list = ls.get("franchise") or ls.get("team")
+        if isinstance(fr_list, list):
+            return fr_list
+    if isinstance(st, list):
+        return st
+    return []
+
+
 def fetch_week_data(league_id: str | int, week: int, client) -> Dict[str, Any]:
     """
-    Pulls the core data the newsletter needs.
-    Requires an authenticated client (cookie on the session).
-    Returns a normalized dict with keys we use in the renderer.
+    Pulls weekly results, standings, player scores, and pools.
+    Works with API key or cookie (client handles both).
     """
-    if client is None:
-        # No client means no cookie → league likely private → return empty
-        return {}
-
     out: Dict[str, Any] = {}
 
-    # Weekly results (starters, scores, etc.)
+    if client is None:
+        return out
+
+    # Weekly results (week required)
     try:
-        wr = client.get_export("weeklyResults", W=week)
-        out["weekly_results"] = wr
+        out["weekly_results"] = client.get_export("weeklyResults", W=week)
     except Exception as e:
         out["weekly_results_error"] = str(e)
 
     # Standings (season-to-date)
     try:
         st = client.get_export("leagueStandings")
-        # Normalize to a simple list we can render. Shape varies by league,
-        # but many responses contain { "leagueStandings": { "franchise": [ {...}, ... ] } }
-        standings = None
-        if isinstance(st, dict):
-            ls = st.get("leagueStandings") or st.get("standings") or {}
-            if isinstance(ls, dict):
-                standings = ls.get("franchise") or ls.get("team")
-        out["standings"] = standings
+        out["standings"] = _normalize_standings(st)
     except Exception as e:
         out["standings_error"] = str(e)
+        out["standings"] = []
 
-    # Optional: playerScores if you want to compute values from raw scoring
+    # Player scores for the week (optional, helps value calc)
     try:
-        ps = client.get_export("playerScores", W=week)
-        out["player_scores"] = ps
+        out["player_scores"] = client.get_export("playerScores", W=week)
     except Exception as e:
         out["player_scores_error"] = str(e)
+
+    # Confidence / NFL pool (optional)
+    try:
+        out["pool_nfl"] = client.get_export("pool", POOLTYPE="NFL")
+    except Exception as e:
+        out["pool_nfl_error"] = str(e)
+
+    # Survivor pool (optional)
+    try:
+        out["survivor_pool"] = client.get_export("survivorPool")
+    except Exception as e:
+        out["survivor_pool_error"] = str(e)
 
     return out
