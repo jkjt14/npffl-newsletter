@@ -6,4 +6,5 @@ lxml
 rapidfuzz
 jinja2
 markdown
+openpyxl
 PyYAML
