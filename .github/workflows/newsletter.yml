@@ -1,57 +1,272 @@
-name: NPFFL Weekly Newsletter
+from __future__ import annotations
 
-on:
-  workflow_dispatch:
-    inputs:
-      week:
-        description: "Week number (1-18). Leave blank for auto."
-        required: false
-        default: ""
-  schedule:
-    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
-jobs:
-  build-newsletter:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+import pandas as pd
+from markdown import markdown as md_to_html
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
 
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+def _fmt_money(x: float | int | None) -> str:
+    if x is None:
+        return "-"
+    try:
+        return f"${int(x):,}"
+    except Exception:
+        return str(x)
 
-      - name: Configure env
-        env:
-          MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
-          MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
-          MFL_API_KEY:  ${{ secrets.MFL_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-        run: |
-          echo "MFL_USERNAME=${MFL_USERNAME}" >> $GITHUB_ENV
-          echo "MFL_PASSWORD=${MFL_PASSWORD}" >> $GITHUB_ENV
-          echo "MFL_API_KEY=${MFL_API_KEY}"   >> $GITHUB_ENV
-          echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> $GITHUB_ENV
 
-      - name: Run newsletter
-        env:
-          WEEK: ${{ github.event.inputs.week }}
-        run: |
-          python -m src.main --week "${WEEK}"
+def _section_header(text: str) -> str:
+    return f"\n## {text}\n\n"
 
-      - name: Upload newsletter artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NPFFL-Newsletter
-          path: build/**
-          if-no-files-found: warn
-          retention-days: 14
+
+def _render_table_markdown(rows: List[Tuple[str, str]]) -> str:
+    """
+    Simple 2-column compact table: Key | Value
+    The user asked that long sentences not go into tables—only short phrases/numbers.
+    """
+    if not rows:
+        return ""
+    out = ["| Item | Value |", "|---|---|"]
+    for k, v in rows:
+        out.append(f"| {k} | {v} |")
+    return "\n".join(out) + "\n\n"
+
+
+def _top_salaries(salary_df: pd.DataFrame, n: int = 10) -> List[Tuple[str, str]]:
+    """
+    Expect columns like: Player, Pos, Team, Salary (case-insensitive tolerant).
+    """
+    if salary_df is None or salary_df.empty:
+        return []
+
+    df = salary_df.copy()
+    # normalize common columns
+    cols = {c.lower(): c for c in df.columns}
+    salary_col = cols.get("salary")
+    player_col = cols.get("player") or cols.get("name")
+    pos_col = cols.get("pos") or cols.get("position")
+    team_col = cols.get("team")
+
+    if salary_col is None or player_col is None:
+        return []
+
+    try:
+        df[salary_col] = pd.to_numeric(df[salary_col], errors="coerce")
+    except Exception:
+        pass
+
+    df = df.dropna(subset=[salary_col])
+    df = df.sort_values(salary_col, ascending=False).head(n)
+
+    rows: List[Tuple[str, str]] = []
+    for _, r in df.iterrows():
+        who = str(r[player_col]).strip()
+        pos = str(r[pos_col]).strip() if pos_col else ""
+        team = str(r[team_col]).strip() if team_col else ""
+        label = f"{who} {f'({pos})' if pos else ''} {f'- {team}' if team else ''}".strip()
+        rows.append((label, _fmt_money(r[salary_col])))
+    return rows
+
+
+def _salaries_by_position(salary_df: pd.DataFrame, pos_list: List[str] = ["QB", "RB", "WR", "TE", "DEF"], n: int = 5) -> str:
+    if salary_df is None or salary_df.empty:
+        return ""
+    df = salary_df.copy()
+    cols = {c.lower(): c for c in df.columns}
+    pos_col = cols.get("pos") or cols.get("position")
+    if pos_col is None:
+        return ""
+
+    parts: List[str] = []
+    for pos in pos_list:
+        sub = df[df[pos_col].astype(str).str.upper() == pos.upper()].copy()
+        if sub.empty:
+            continue
+        salary_col = cols.get("salary")
+        if salary_col:
+            sub[salary_col] = pd.to_numeric(sub[salary_col], errors="coerce")
+            sub = sub.dropna(subset=[salary_col]).sort_values(salary_col, ascending=False).head(n)
+        player_col = cols.get("player") or cols.get("name")
+        team_col = cols.get("team")
+        rows: List[Tuple[str, str]] = []
+        for _, r in sub.iterrows():
+            who = str(r[player_col]).strip() if player_col else "(unknown)"
+            team = str(r[team_col]).strip() if team_col else ""
+            sal = _fmt_money(r[salary_col]) if salary_col else "-"
+            label = f"{who} {f'- {team}' if team else ''}".strip()
+            rows.append((label, sal))
+        if rows:
+            parts.append(_section_header(f"{pos} — Top Salaries"))
+            parts.append(_render_table_markdown(rows))
+    return "".join(parts)
+
+
+def _values_block(value_results: Dict[str, Any]) -> str:
+    """
+    Render Top Values / Busts if present.
+    Expect lists of dicts under keys like 'top_values', 'top_busts'
+    with fields: player, team, pos, pts, salary, value_per_k, delta_vs_salary, starter_team, etc.
+    """
+    if not value_results:
+        return ""
+
+    out: List[str] = []
+    top_vals = value_results.get("top_values") or []
+    top_busts = value_results.get("top_busts") or []
+
+    def _mk_rows(items):
+        rows: List[Tuple[str, str]] = []
+        for it in items:
+            who = it.get("player") or it.get("name") or "Unknown"
+            pos = it.get("pos") or ""
+            pts = it.get("pts")
+            salary = it.get("salary")
+            val_k = it.get("value_per_k") or it.get("ppk")
+            delta = it.get("delta_vs_salary") or it.get("delta")
+            label = f"{who}{f' ({pos})' if pos else ''}"
+            # keep table values compact
+            stat = f"Pts: {pts} | { _fmt_money(salary) } | P/$1K: {val_k} | Δ: {delta}"
+            rows.append((label, stat))
+        return rows
+
+    if top_vals:
+        out.append(_section_header("Top Values"))
+        out.append(_render_table_markdown(_mk_rows(top_vals)))
+    if top_busts:
+        out.append(_section_header("Top Busts"))
+        out.append(_render_table_markdown(_mk_rows(top_busts)))
+
+    return "".join(out)
+
+
+def _standings_block(standings: Any) -> str:
+    """
+    Allows a simple standings summary if you provide it in week_data['standings'].
+    We render a compact table of 'Team' | 'Record' when possible.
+    """
+    if not standings:
+        return ""
+    try:
+        rows: List[Tuple[str, str]] = []
+        for row in standings:
+            team = str(row.get("team") or row.get("name") or row.get("franchise") or "Team")
+            rec = str(row.get("record") or row.get("wlt") or "-")
+            rows.append((team, rec))
+        if rows:
+            return _section_header("Standings (to date)") + _render_table_markdown(rows)
+    except Exception:
+        pass
+    return ""
+
+
+def _roasts_block(roasts: Dict[str, Any]) -> str:
+    """
+    Renders trophies/roasts if present (expects dict or list).
+    """
+    if not roasts:
+        return ""
+    parts: List[str] = [_section_header("Trophies & Roasts")]
+    # Very simple rendering — feel free to adjust shape later
+    if isinstance(roasts, dict):
+        for k, v in roasts.items():
+            parts.append(f"- **{k}**: {v}\n")
+    elif isinstance(roasts, list):
+        for item in roasts:
+            if isinstance(item, dict):
+                title = item.get("title") or item.get("name") or "Trophy"
+                desc = item.get("text") or item.get("blurb") or ""
+                parts.append(f"- **{title}**: {desc}\n")
+            else:
+                parts.append(f"- {str(item)}\n")
+    return "".join(parts) + "\n"
+
+
+def render_newsletter(context: Dict[str, Any], output_dir: str = "build", week: int | None = None) -> str:
+    """
+    Builds both Markdown (always) and HTML (if outputs.make_html true).
+    Returns the path to the Markdown file.
+    """
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    week = int(week or context.get("week") or 1)
+
+    nl = context.get("newsletter") or {}
+    title = nl.get("title", "NPFFL Weekly Roast")
+    tz = context.get("timezone", "America/New_York")
+
+    data = context.get("data") or {}
+    salary_rows = data.get("salary_rows", 0)
+    week_data = data.get("week") or {}
+    value_results = data.get("values") or {}
+    roasts = data.get("roasts") or {}
+    standings = data.get("standings")
+
+    # Header
+    md_parts: List[str] = [
+        f"# {title}\n",
+        f"Week **{week}** · {tz}\n",
+    ]
+
+    # At-a-glance (compact)
+    key_rows: List[Tuple[str, str]] = []
+    key_rows.append(("Salary rows", str(salary_rows)))
+    if value_results:
+        tv_count = len(value_results.get("top_values") or [])
+        tb_count = len(value_results.get("top_busts") or [])
+        key_rows.append(("Top Values", str(tv_count)))
+        key_rows.append(("Top Busts", str(tb_count)))
+    if standings:
+        try:
+            key_rows.append(("Standings teams", str(len(standings))))
+        except Exception:
+            pass
+
+    md_parts.append(_section_header("At a Glance"))
+    md_parts.append(_render_table_markdown(key_rows))
+
+    # Values/Busts if available
+    vb = _values_block(value_results)
+    if vb:
+        md_parts.append(vb)
+
+    # Salary-only fallbacks (so the newsletter is useful on day 1)
+    if salary_rows and not vb:
+        # Top Salaries overall
+        try:
+            # In case you want richer per-position splits
+            md_parts.append(_section_header("Top Salaries (Overall)"))
+            md_parts.append(_render_table_markdown(_top_salaries(data.get("salary_df"), n=10)))
+        except Exception:
+            pass
+        # By position
+        try:
+            md_parts.append(_salaries_by_position(data.get("salary_df")))
+        except Exception:
+            pass
+
+    # Standings if provided
+    st = _standings_block(standings)
+    if st:
+        md_parts.append(st)
+
+    # Roasts/Trophies if provided
+    rb = _roasts_block(roasts)
+    if rb:
+        md_parts.append(rb)
+
+    # Footer
+    md_parts.append("\n*Generated automatically.*\n")
+
+    # Join & write markdown
+    md_text = "\n".join(md_parts)
+    md_path = Path(output_dir) / f"NPFFL_Week_{week:02d}.md"
+    md_path.write_text(md_text, encoding="utf-8")
+
+    # Optional HTML
+    make_html = bool((context.get("outputs") or {}).get("make_html", True))
+    if make_html:
+        html = md_to_html(md_text, output_format="html5")
+        (Path(output_dir) / f"NPFFL_Week_{week:02d}.html").write_text(html, encoding="utf-8")
+
+    return str(md_path)
