@@ -17,11 +17,26 @@ def _as_list(x):
     return []
 
 
-def _clean_name(n: str) -> str:
+def _clean_key(n: str) -> str:
+    # Normalize "Last, First" -> "last, first" (for matching to salary)
     n = (n or "").strip()
     n = re.sub(r"[!·•]+", "", n)
     n = re.sub(r"\s+", " ", n)
     return n.lower()
+
+
+def _first_last(name: str) -> str:
+    """
+    Convert 'Last, First' -> 'First Last' for display.
+    If no comma, return as-is.
+    """
+    if not name:
+        return name
+    parts = [p.strip() for p in name.split(",")]
+    if len(parts) == 2:
+        last, first = parts[0], parts[1]
+        return f"{first} {last}"
+    return name
 
 
 def _ppk(points: float, salary: float) -> Optional[float]:
@@ -55,7 +70,7 @@ def _salary_index_from_df(df: "pd.DataFrame") -> Tuple[Dict[str, float], Dict[st
         nm = str(r.get(name_col) or "").strip()
         if not nm:
             continue
-        key = _clean_name(nm)
+        key = _clean_key(nm)
         sal = r.get(sal_col)
         if sal is not None and pd.notna(sal):
             out_salary[key] = float(sal)
@@ -89,7 +104,6 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
     name_to_salary: Dict[str, float] = {}
     name_to_pos: Dict[str, str] = {}
     name_to_team: Dict[str, str] = {}
-
     if salary_df is not None and not getattr(salary_df, "empty", True):
         name_to_salary, name_to_pos, name_to_team = _salary_index_from_df(salary_df)
 
@@ -114,33 +128,53 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
             pos = pos_hint
             team = team_hint
             if nm:
-                key = _clean_name(nm)
+                key = _clean_key(nm)
                 salary = name_to_salary.get(key)
                 if not pos:
                     pos = name_to_pos.get(key)
                 if not team:
                     team = name_to_team.get(key)
 
+            display_name = _first_last(nm) if nm else pid
             enriched_starters.append({
                 "player_id": pid,
-                "player": nm or pid,
+                "player": display_name,   # First Last for display
                 "pos": pos,
                 "team": team,
                 "salary": salary,
                 "pts": pts,
                 "franchise_id": fid,
-                "ppk": _ppk(pts, salary) if (salary is not None) else None,
+                "ppk": _ppk(pts, salary) if (salary is not None) else None,  # used internally
             })
 
-    # Top performers
-    top_performers = sorted(enriched_starters, key=lambda r: r["pts"], reverse=True)[:10]
+    # Aggregate top performers by player (dedupe) and collect managers who started them
+    perf_map: Dict[str, Dict[str, Any]] = {}
+    for r in enriched_starters:
+        key = (r.get("player") or "").lower() + "|" + (r.get("pos") or "")
+        node = perf_map.setdefault(key, {
+            "player": r.get("player"),
+            "pos": r.get("pos"),
+            "team": r.get("team"),
+            "pts": 0.0,
+            "max_pts": 0.0,
+            "franchise_ids": set(),
+        })
+        node["max_pts"] = max(node["max_pts"], r.get("pts") or 0.0)
+        node["franchise_ids"].add(r.get("franchise_id"))
 
-    # Value rankings
+    top_performers = sorted(
+        [{"player": v["player"], "pos": v["pos"], "team": v["team"], "pts": v["max_pts"], "franchise_ids": sorted(list(v["franchise_ids"]))}
+         for v in perf_map.values()],
+        key=lambda r: r["pts"],
+        reverse=True
+    )[:10]
+
+    # Value rankings (keep math internal; we’ll narrate without naming the metric)
     with_ppk = [r for r in enriched_starters if r.get("ppk") is not None]
     top_values = sorted(with_ppk, key=lambda r: (r["ppk"], r["pts"]), reverse=True)[:10]
     top_busts = sorted(with_ppk, key=lambda r: (r["ppk"], -r["pts"]))[:10]
 
-    # Per-position
+    # Per-position “value” lists
     by_pos: Dict[str, List[Dict[str, Any]]] = {}
     for r in with_ppk:
         pos = (r.get("pos") or "UNK").upper()
@@ -148,7 +182,7 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
     for pos, rows in list(by_pos.items()):
         by_pos[pos] = sorted(rows, key=lambda r: r["ppk"], reverse=True)[:10]
 
-    # Team efficiency
+    # Team efficiency (math internal; display will hide the metric label)
     team_stats: Dict[str, Dict[str, float]] = {}
     for r in enriched_starters:
         fid = r["franchise_id"]
@@ -168,7 +202,7 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
             "franchise_id": fid,
             "total_pts": round(total_pts, 2),
             "total_sal": int(total_sal) if total_sal else 0,
-            "ppk": ppk_team,
+            "ppk": ppk_team,  # used for ordering only
         })
     team_efficiency.sort(key=lambda r: (r["ppk"] or 0.0, r["total_pts"]), reverse=True)
 
