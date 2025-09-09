@@ -160,10 +160,8 @@ def _render_confidence(pool_nfl: Any, week: int, fmap: Dict[str, str], note: str
         if not wnode:
             out += f"{nm} | —\n"; continue
         games = _as_list(wnode.get("game"))
-        try:
-            games = sorted(games, key=lambda g: int(g.get("rank") or 0), reverse=True)
-        except Exception:
-            pass
+        try: games = sorted(games, key=lambda g: int(g.get("rank") or 0), reverse=True)
+        except Exception: pass
         short = ", ".join([f"{g.get('pick','?')}({g.get('rank','-')})" for g in games[:3]]) if games else "—"
         out += f"{nm} | {short}\n"
     out += "\n"
@@ -223,14 +221,12 @@ def render_newsletter(context: Dict[str, Any], output_dir: str, week: int) -> st
     md.append(_render_confidence(pool_nfl, week, fmap, notes.get("confidence","")))
     md.append(_render_survivor(survivor, week, fmap, notes.get("survivor","")))
 
-    # Rotating spicy segments
     md.append(_h2("Fraud Watch 🔥"))
     if notes.get("fraud_watch"): md.append(_p(notes["fraud_watch"]))
 
     md.append(_h2("DFS Jail 🚔"))
     if notes.get("dfs_jail"): md.append(_p(notes["dfs_jail"]))
 
-    # Trophies — concise
     roasts = data.get("roasts") or {}
     has_trophies = any(k in roasts for k in ("coupon_clipper","dumpster_fire","galaxy_brain","banana_peel","walk_of_shame"))
     if has_trophies:
