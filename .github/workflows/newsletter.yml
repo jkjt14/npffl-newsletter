@@ -8,7 +8,7 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 16 * * 2" # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
+    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
 
 jobs:
   build-newsletter:
@@ -27,32 +27,33 @@ jobs:
 
       - name: Install deps
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # ✅ All secrets are defined in the YAML env block (NOT in the run block)
       - name: Configure env
         env:
           MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
           MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
           MFL_API_KEY:  ${{ secrets.MFL_API_KEY }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
         run: |
-          echo "MFL_USERNAME=${MFL_USERNAME}" >> $GITHUB_ENV
-          echo "MFL_PASSWORD=${MFL_PASSWORD}" >> $GITHUB_ENV
-          echo "MFL_API_KEY=${MFL_API_KEY}"   >> $GITHUB_ENV
-          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }} 
-          echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> $GITHUB_ENV
+          set -euo pipefail
+          echo "MFL_USERNAME=${MFL_USERNAME}" >> "$GITHUB_ENV"
+          echo "MFL_PASSWORD=${MFL_PASSWORD}" >> "$GITHUB_ENV"
+          echo "MFL_API_KEY=${MFL_API_KEY}"   >> "$GITHUB_ENV"
+          echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> "$GITHUB_ENV"
+          echo "THE_ODDS_API_KEY=${THE_ODDS_API_KEY}" >> "$GITHUB_ENV"
+          echo "[env] Exported env to GITHUB_ENV. THE_ODDS_API_KEY set: $([[ -n "${THE_ODDS_API_KEY:-}" ]] && echo yes || echo no)"
 
       - name: Run newsletter
         env:
           WEEK: ${{ github.event.inputs.week }}
         run: |
-          python -m src.main --week "${WEEK}"
-
-      - name: Upload newsletter artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NPFFL-Newsletter
-          path: build/**
-          if-no-files-found: warn
-          retention-days: 14
+          set -euo pipefail
+          mkdir -p build
+          python -m src.main --week "${WEEK:-}"
+          echo "[out] Listing build/"
+          ls -lah build
