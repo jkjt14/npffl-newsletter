@@ -1,47 +1,46 @@
-# src/fetch_week.py
 from __future__ import annotations
-import os, sys
-from typing import Optional, Tuple
-import pandas as pd
-import numpy as np
-from .mfl_client import MFLClient
 
-def get_weekly_data(
-    year: int,
-    league_id: str,
-    api_key: str,
-    week: int,
-    *,
-    weekly_path: Optional[str] = None,          # kept for back-compat
-    standings_path: Optional[str] = None,
-    survivor_path: Optional[str] = None,
-    pool_nfl_path: Optional[str] = None,
-    sheet: Optional[str] = None,
-) -> Tuple[int, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Return (wk, standings, weekly, survivor, pool_nfl) via MFL API."""
-    wk = int(week) if week else int(os.getenv("WEEK", "0") or 0)
-    if wk <= 0:
-        # crude auto: use previous week (for Tuesday runs, week-1 should be complete)
-        wk = max(1, int(os.getenv("GITHUB_RUN_ATTEMPT", "2")) - 1)  # harmless fallback
-    client = MFLClient(year=int(year), league_id=str(league_id), api_key=api_key)
+from typing import Any, Dict
 
-    standings = client.league_standings(wk)
-    weekly    = client.weekly_results(wk)
-    survivor  = client.survivor_pool(wk)
-    pool_nfl  = client.pool(wk, pooltype="NFL")
 
-    def _shape(df: pd.DataFrame) -> str:
-        return f"{df.shape[0]}x{df.shape[1]}" if isinstance(df, pd.DataFrame) else "NA"
-    print(f"[fetch_week] (API) week={wk} -> standings={_shape(standings)}, weekly={_shape(weekly)}, "
-          f"survivor={_shape(survivor)}, pool_nfl={_shape(pool_nfl)}", file=sys.stderr, flush=True)
-    return wk, standings, weekly, survivor, pool_nfl
+def fetch_week_data(league_id: str | int, week: int, client) -> Dict[str, Any]:
+    """
+    Pulls the core data the newsletter needs.
+    Requires an authenticated client (cookie on the session).
+    Returns a normalized dict with keys we use in the renderer.
+    """
+    if client is None:
+        # No client means no cookie → league likely private → return empty
+        return {}
 
-def flatten_weekly_starters(df: pd.DataFrame) -> pd.DataFrame:
-    """Use boolean Starter column if present; else pass-through."""
-    if df is None or df.empty: return df.copy()
-    if "Starter" in df.columns:
-        s = df["Starter"]
-        if str(s.dtype) in ("bool", "boolean"):
-            return df[s == True].copy()
-        return df[df["Starter"].astype(str).str.lower().isin(["true","1","starter","yes"])].copy()
-    return df.copy()
+    out: Dict[str, Any] = {}
+
+    # Weekly results (starters, scores, etc.)
+    try:
+        wr = client.get_export("weeklyResults", W=week)
+        out["weekly_results"] = wr
+    except Exception as e:
+        out["weekly_results_error"] = str(e)
+
+    # Standings (season-to-date)
+    try:
+        st = client.get_export("leagueStandings")
+        # Normalize to a simple list we can render. Shape varies by league,
+        # but many responses contain { "leagueStandings": { "franchise": [ {...}, ... ] } }
+        standings = None
+        if isinstance(st, dict):
+            ls = st.get("leagueStandings") or st.get("standings") or {}
+            if isinstance(ls, dict):
+                standings = ls.get("franchise") or ls.get("team")
+        out["standings"] = standings
+    except Exception as e:
+        out["standings_error"] = str(e)
+
+    # Optional: playerScores if you want to compute values from raw scoring
+    try:
+        ps = client.get_export("playerScores", W=week)
+        out["player_scores"] = ps
+    except Exception as e:
+        out["player_scores_error"] = str(e)
+
+    return out
