@@ -11,10 +11,10 @@ inputs:
   week_strategy: "auto"
 outputs:
   dir: "build"
-  push_to_slack: false
+  push_to_slack: true
   make_html: true
 trophies: [coupon_clipper, dumpster_fire, galaxy_brain, banana_peel, walk_of_shame]
-franchises:
+franchise_names:
   "0001": "Freaks"
   "0002": "GBHDJ14"
   "0003": "Injury Inc"
@@ -34,5 +34,6 @@ franchises:
   "0017": "Polish Pounders"
 assets:
   use_franchise_logos: true
-  logos_dir: "assets/franchises"
-  logo_width_px: 26
+  logos_dir: "assets/franchises"   # put PNGs here, named by Franchise ID (e.g., 0001.png)
+  logo_width_px: 26                # rendered width in Markdown/HTML tables
+
