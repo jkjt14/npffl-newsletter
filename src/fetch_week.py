@@ -10,7 +10,7 @@ def _get_api_key() -> str:
 
 
 def _base_url(year: int) -> str:
-    # Stick to your shard
+    # Stick to your league's shard
     return f"https://www46.myfantasyleague.com/{year}"
 
 
@@ -35,7 +35,8 @@ def _first_last(name: str) -> str:
 
 def _players_map_from_player_scores(year: int, league_id: str, week: int) -> Dict[str, Dict[str, str]]:
     """
-    Build player map from this week's playerScores, which reliably includes names.
+    Build player map from this week's playerScores.
+    IMPORTANT: some shards use 'playerScores.playerScore' (singular key).
     """
     url = f"{_base_url(year)}/export"
     params = {"TYPE": "playerScores", "L": str(league_id), "W": str(week)}
@@ -45,9 +46,16 @@ def _players_map_from_player_scores(year: int, league_id: str, week: int) -> Dic
     data = _get_json(url, params)
     out: Dict[str, Dict[str, str]] = {}
     ps = (data or {}).get("playerScores")
-    if not isinstance(ps, dict):
-        return out
-    for p in ps.get("player", []) or []:
+
+    rows: List[Dict[str, Any]] = []
+    if isinstance(ps, dict):
+        # handle both shapes
+        if isinstance(ps.get("player"), list):
+            rows = ps.get("player") or []
+        elif isinstance(ps.get("playerScore"), list):
+            rows = ps.get("playerScore") or []
+
+    for p in rows:
         pid = str(p.get("id") or "").strip()
         if not pid:
             continue
@@ -83,7 +91,6 @@ def _enrich_player_info(year: int, ids: List[str], players_map: Dict[str, Any]) 
     for i in range(0, len(ids), BATCH):
         chunk = ids[i:i + BATCH]
         data = _get_json(url, {"TYPE": "playerInfo", "P": ",".join(chunk)})
-        # Some shards return under "players.player", some under "playerInfo.player"
         node = (data.get("players") or data.get("playerInfo")) if isinstance(data, dict) else None
         rows = []
         if isinstance(node, dict):
@@ -113,19 +120,19 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
     base = _base_url(year)
     apikey = _get_api_key()
 
-    # Weekly results (starter lineups + scores)
+    # Weekly results (who actually started)
     wr_params = {"TYPE": "weeklyResults", "L": str(league_id), "W": str(week)}
     if apikey:
         wr_params["APIKEY"] = apikey
     weekly_results = _get_json(f"{base}/export", wr_params)
 
-    # Standings (for names + VP)
+    # Standings (names + VP)
     st_params = {"TYPE": "leagueStandings", "L": str(league_id), "COLUMN_NAMES": "", "ALL": "", "WEB": ""}
     if apikey:
         st_params["APIKEY"] = apikey
     standings_json = _get_json(f"{base}/export", st_params)
-    standings_rows = []
     fmap: Dict[str, str] = {}
+    standings_rows = []
     ls = (standings_json or {}).get("leagueStandings")
     if isinstance(ls, dict):
         for fr in (ls.get("franchise") or []):
@@ -153,13 +160,16 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
         sv_params["APIKEY"] = apikey
     survivor_pool = _get_json(f"{base}/export", sv_params)
 
-    # ✅ Player map from *this week's* playerScores (names included)
+    # ✅ Player map from playerScores (now handles both keys)
     players_map = _players_map_from_player_scores(year, str(league_id), week)
 
-    # Enrich any stragglers with playerInfo (rare)
+    # Enrich any missing IDs with playerInfo
     missing_ids = _collect_missing_ids(weekly_results, players_map)
     if missing_ids:
         _enrich_player_info(year, missing_ids, players_map)
+
+    # lightweight instrumentation (helps debugging in logs)
+    print(f"[fetch_week] players_map size: {len(players_map)}; enriched: {len(missing_ids)} missing IDs")
 
     return {
         "weekly_results": weekly_results,
@@ -168,5 +178,4 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
         "survivor_pool": survivor_pool,
         "players_map": players_map,
         "franchise_names": fmap,
-        # odds handled elsewhere if configured
     }
