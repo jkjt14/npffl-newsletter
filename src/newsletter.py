@@ -1,9 +1,13 @@
 from __future__ import annotations
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 import markdown
 
+
+# ---------------------------
+# Jinja environment
+# ---------------------------
 def _mk_env() -> Environment:
     tpl_dir = Path("templates")
     tpl_dir.mkdir(parents=True, exist_ok=True)
@@ -13,9 +17,12 @@ def _mk_env() -> Environment:
     )
     return env
 
+
+# ---------------------------
+# Helpers to summarize pools
+# ---------------------------
 def _fmt_top3_conf(pool_nfl: Dict[str, Any], franchise_names: Dict[str, str]) -> List[Dict[str, str]]:
-    out = []
-    # Expect your existing structure; fall back gently
+    out: List[Dict[str, str]] = []
     picks = (pool_nfl or {}).get("pool") or {}
     fr = picks.get("franchise") or []
     if isinstance(fr, dict):
@@ -23,9 +30,12 @@ def _fmt_top3_conf(pool_nfl: Dict[str, Any], franchise_names: Dict[str, str]) ->
     for row in fr:
         fid = str(row.get("id") or "")
         name = franchise_names.get(fid, fid)
+        px = row.get("pick") or []
+        # normalize to list of dicts
+        if isinstance(px, dict):
+            px = [px]
         top3 = []
-        # assumes children like [{"team":"PHI","points":"16"}, ...] or similar
-        for p in (row.get("pick") or []):
+        for p in px:
             try:
                 t = p.get("nflteam") or p.get("team") or ""
                 c = int(p.get("points") or p.get("value") or 0)
@@ -38,12 +48,13 @@ def _fmt_top3_conf(pool_nfl: Dict[str, Any], franchise_names: Dict[str, str]) ->
             out.append({"manager": name, "line": line})
     return out
 
+
 def _mk_pool_summary(pool_nfl: Dict[str, Any], franchise_names: Dict[str, str]) -> Dict[str, Any]:
-    # Dumb but safe defaults. You can enhance with the-odds-api later.
+    from collections import Counter
     top3 = _fmt_top3_conf(pool_nfl, franchise_names)
-    # naive freq for “most common”
-    all_firsts = []
-    no_picks = []
+
+    all_firsts: List[str] = []
+    no_picks: List[str] = []
     picks = (pool_nfl or {}).get("pool") or {}
     fr = picks.get("franchise") or []
     if isinstance(fr, dict):
@@ -52,21 +63,25 @@ def _mk_pool_summary(pool_nfl: Dict[str, Any], franchise_names: Dict[str, str]) 
         fid = str(row.get("id") or "")
         name = franchise_names.get(fid, fid)
         px = row.get("pick") or []
+        if isinstance(px, dict):
+            px = [px]
         if not px:
             no_picks.append(name)
         else:
             try:
                 first = max(px, key=lambda p: int(p.get("points") or p.get("value") or 0))
                 t = first.get("nflteam") or first.get("team") or ""
-                all_firsts.append(t)
+                if t:
+                    all_firsts.append(t)
             except Exception:
                 pass
+
     most_common = {"team": "—", "count": 0}
     if all_firsts:
-        from collections import Counter
         t, cnt = Counter(all_firsts).most_common(1)[0]
         most_common = {"team": t, "count": cnt}
-    # placeholders for boldest/faceplant until odds are wired
+
+    # placeholders for boldest/faceplant until odds are wired (safe defaults)
     boldest = {"manager": (top3[0]["manager"] if top3 else "—"), "team": "—", "conf": "—"}
     faceplant = {"manager": "—", "team": "—", "conf": "—"}
 
@@ -78,14 +93,18 @@ def _mk_pool_summary(pool_nfl: Dict[str, Any], franchise_names: Dict[str, str]) 
         "faceplant": faceplant,
     }
 
+
 def _mk_survivor_summary(survivor_pool: Dict[str, Any], franchise_names: Dict[str, str]) -> Dict[str, Any]:
-    rows = []
-    no_picks = []
-    eliminated = []  # stub; can be derived if API supplies result flags
+    from collections import Counter
+    rows: List[Dict[str, str]] = []
+    no_picks: List[str] = []
+    eliminated: List[str] = []  # can be derived if API returns outcome flags
+
     surv = (survivor_pool or {}).get("survivorPool") or {}
     fr = surv.get("franchise") or []
     if isinstance(fr, dict):
         fr = [fr]
+
     for row in fr:
         fid = str(row.get("id") or "")
         name = franchise_names.get(fid, fid)
@@ -93,64 +112,13 @@ def _mk_survivor_summary(survivor_pool: Dict[str, Any], franchise_names: Dict[st
         if not pick:
             no_picks.append(name)
         rows.append({"manager": name, "pick": pick or "—"})
-    # most common
-    from collections import Counter
+
     picks = [r["pick"] for r in rows if r["pick"] and r["pick"] != "—"]
     mc = {"team": "—", "count": 0}
     if picks:
         t, cnt = Counter(picks).most_common(1)[0]
         mc = {"team": t, "count": cnt}
-    boldest = {"manager": rows[0]["manager"] if rows else "—", "team": rows[0]["pick"] if rows else "—"}  # placeholder
-    return {
-        "rows": rows,
-        "no_picks": no_picks,
-        "eliminated": eliminated,
-        "most_common": mc,
-        "boldest": boldest,
-    }
 
-def render_newsletter(payload: Dict[str, Any]) -> Dict[str, str]:
-    """
-    Returns {'md': markdown_text, 'html': html_text}
-    """
-    title = payload.get("title", "NPFFL Weekly Roast")
-    week_label = payload.get("week_label", "01")
-    timezone = payload.get("timezone", "America/New_York")
-    standings_rows = payload.get("standings_rows", [])
-    team_efficiency = payload.get("team_efficiency", [])
-    top_performers = payload.get("top_performers", [])
-    top_values = payload.get("top_values", [])
-    top_busts = payload.get("top_busts", [])
-    franchise_names = payload.get("franchise_names", {})
-    roasts = payload.get("roasts", {})  # from roastbook.py (narrative strings)
-
-    # Summaries for pick’em & survivor (safe defaults if not provided)
-    pool_nfl_summary = payload.get("pool_nfl_summary")
-    if pool_nfl_summary is None:
-        pool_nfl_summary = _mk_pool_summary(payload.get("pool_nfl", {}), franchise_names)
-
-    survivor_summary = payload.get("survivor_summary")
-    if survivor_summary is None:
-        survivor_summary = _mk_survivor_summary(payload.get("survivor_pool", {}), franchise_names)
-
-    env = _mk_env()
-    tpl = env.get_template("newsletter.md.j2")
-
-    md = tpl.render(
-        title=title,
-        week_label=week_label,
-        timezone=timezone,
-        standings_rows=standings_rows,
-        team_efficiency=team_efficiency,
-        top_performers=top_performers,
-        top_values=top_values,
-        top_busts=top_busts,
-        pool_nfl_summary=pool_nfl_summary,
-        survivor_summary=survivor_summary,
-        franchise_names=franchise_names,
-        roasts=roasts,
-        manager_traits=payload.get("manager_traits", {}),
-    )
-
-    html = markdown.markdown(md, extensions=["tables", "fenced_code"])
-    return {"md": md, "html": html}
+    # placeholder boldest = first non-empty
+    boldest = {"manager": "—", "team": "—"}
+   
