@@ -1,85 +1,21 @@
-name: NPFFL Weekly Newsletter
-
+name: Build Newsletter
 on:
   workflow_dispatch:
-    inputs:
-      week:
-        description: "Week number (1-18). Leave blank for auto."
-        required: false
-        default: ""
-  schedule:
-    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
-
+  push:
+    branches: [ main ]
 jobs:
-  build-newsletter:
+  build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        shell: bash
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-
-      - name: Install deps
-        run: |
-          set -euo pipefail
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Configure env
-        env:
-          MFL_USERNAME: ${{ secrets.MFL_USERNAME }}
-          MFL_PASSWORD: ${{ secrets.MFL_PASSWORD }}
-          MFL_API_KEY:  ${{ secrets.MFL_API_KEY }}
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-          THE_ODDS_API_KEY: ${{ secrets.THE_ODDS_API_KEY }}
-        run: |
-          set -euo pipefail
-          echo "MFL_USERNAME=${MFL_USERNAME}" >> "$GITHUB_ENV"
-          echo "MFL_PASSWORD=${MFL_PASSWORD}" >> "$GITHUB_ENV"
-          echo "MFL_API_KEY=${MFL_API_KEY}"   >> "$GITHUB_ENV"
-          echo "SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}" >> "$GITHUB_ENV"
-          echo "THE_ODDS_API_KEY=${THE_ODDS_API_KEY}" >> "$GITHUB_ENV"
-
-      - name: Run newsletter
-        env:
-          WEEK: ${{ github.event.inputs.week }}
-        run: |
-          set -euo pipefail
-          mkdir -p build
-          python -m src.main --week "${WEEK:-}"
-          echo "[out] Contents of build/:"
-          ls -lah build || true
-
-      # derive a week label for artifact naming if none provided
-      - name: Discover week label
-        run: |
-          set -euo pipefail
-          WEEK_IN="${{ github.event.inputs.week }}"
-          if [ -n "$WEEK_IN" ]; then
-            WLBL=$(printf "%02d" "$WEEK_IN")
-          else
-            F=$(ls -1 build/NPFFL_Week_*.md 2>/dev/null | sort | tail -n1 || true)
-            if [ -n "$F" ]; then
-              WLBL=$(basename "$F" | sed -E 's/NPFFL_Week_([0-9]{2}).*/\1/')
-            else
-              WLBL="unknown"
-            fi
-          fi
-          echo "WEEK_LABEL=$WLBL" >> "$GITHUB_ENV"
-          echo "[artifact] WEEK_LABEL=$WLBL"
-
-      - name: Upload newsletter artifact
-        uses: actions/upload-artifact@v4
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - run: python -c "from src.main import main; main()"
+      - uses: actions/upload-artifact@v4
         with:
-          name: NPFFL_Week_${{ env.WEEK_LABEL }}
+          name: newsletter
           path: |
             build/*.md
             build/*.html
-          if-no-files-found: error
-          retention-days: 30
