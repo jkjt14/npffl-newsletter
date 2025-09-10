@@ -2,56 +2,48 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 import yaml
 
-from .fetch_week import fetch_week_data
-from .load_salary import load_salary_file
-from .value_engine import compute_values
+from .mfl_client import MFLClient
+from .fetch_week import fetch_week_data  # must return weekly data dict
+from .load_salary import load_salary_file  # must return pandas DataFrame
+from .value_engine import compute_values   # returns dict with value/busts & team efficiency
 from .newsletter import render_newsletter
-from .odds_client import fetch_odds_snapshot
-from .post_outputs import maybe_post_to_slack
 
-def read_config(path: str | Path = "config.yaml") -> Dict[str, Any]:
+
+def _read_config(path: str | Path = "config.yaml") -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description="Build NPFFL Weekly Newsletter")
-    ap.add_argument("--config", default="config.yaml")
-    ap.add_argument("--week", type=int, default=None, help="Override week number")
-    args = ap.parse_args()
 
-    cfg = read_config(args.config)
-    year = int(cfg.get("year", 2025))
-    league_id = str(cfg.get("league_id", "0"))
-    week = int(args.week or 1)
-    out_dir = str(cfg.get("outputs", {}).get("dir", "build"))
-    make_html = bool(cfg.get("outputs", {}).get("make_html", True))
-    title = str(cfg.get("newsletter", {}).get("title", "League Newsletter"))
+def _week_label(week: int | None) -> str:
+    return f"{int(week):02d}" if week is not None else "01"
 
-    # Data fetching
-    week_data = fetch_week_data(year, league_id, week)
-    values = compute_values(week_data.get("players", []))
-    odds = fetch_odds_snapshot()
 
-    context = {
-        "title": title,
-        "year": year,
-        "league_id": league_id,
-        "week": week,
-        "standings": week_data.get("standings", []),
-        **values,
-        "odds": odds,
-    }
+def _safe_float(x: Any, default: float = 0.0) -> float:
+    try:
+        return float(x)
+    except Exception:
+        return default
 
-    outputs = render_newsletter(context, templates_dir=str(Path(__file__).parent / "templates"), out_dir=out_dir, make_html=make_html)
-    if cfg.get("outputs", {}).get("push_to_slack"):
-        maybe_post_to_slack(outputs.get("md"))
 
-    print(json.dumps(outputs, indent=2))
+def _merge_franchise_names(*maps: Dict[str, str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for mp in maps:
+        for k, v in (mp or {}).items():
+            if k is None:
+                continue
+            out[str(k).zfill(4)] = str(v)
+    return out
 
-if __name__ == "__main__":
-    main()
+
+def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
+    """
+    Expected output rows: {id, name, pf, vp}
+    Tries multiple shapes from fetch_week payloads.
+    """
+    rows: List[Dict[st]()]()
