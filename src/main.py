@@ -320,16 +320,14 @@ def main() -> None:
     starters_by_f = _index_starters_by_franchise(week_data)
 
     # Compute value metrics
-    values_out = compute_values(
-        salary_df=salary_df,
-        context={
-            "players_map": players_map,
-            "starters_by_franchise": starters_by_f,
-            "franchise_names": f_map,
-            "week": week,
-            "year": year,
-        },
-    )
+values_out = compute_values(
+    salary_df=salary_df,
+    players_map=players_map,
+    starters_by_franchise=starters_by_f,
+    franchise_names=f_map,
+    week=week,
+    year=year,
+)
 
     # Build sections for template
     standings_rows = _build_standings_rows(week_data, f_map)
