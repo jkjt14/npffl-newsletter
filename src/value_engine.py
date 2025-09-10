@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 try:
     import pandas as pd
 except Exception:
     pd = None
 
-# rapidfuzz is in requirements; guard import
 try:
     from rapidfuzz import process, fuzz
 except Exception:
@@ -16,9 +15,6 @@ except Exception:
     fuzz = None
 
 
-# -----------------------
-# small utils
-# -----------------------
 def _as_list(x):
     if isinstance(x, list): return x
     if isinstance(x, dict): return [x]
@@ -48,9 +44,6 @@ def _safe_float(x, default=0.0) -> float:
     except Exception: return float(default)
 
 
-# -----------------------
-# salary indexing
-# -----------------------
 _ID_CANDIDATES = ["id", "playerid", "mfl_id", "player id", "mfl id"]
 
 def _detect_col(df: "pd.DataFrame", *cands: str) -> str | None:
@@ -60,16 +53,9 @@ def _detect_col(df: "pd.DataFrame", *cands: str) -> str | None:
     return None
 
 def _salary_index_from_df(df: "pd.DataFrame"):
-    """
-    Build multiple indices:
-      - id_to_row: {player_id_str: row dict}
-      - name_to_salary / name_to_pos / name_to_team for name-based fallback
-    Accepts flexible column headers.
-    """
     if df is None or getattr(df, "empty", True):
         return {}, {}, {}, {}, {}
 
-    # flexible headers
     id_col   = _detect_col(df, *_ID_CANDIDATES)
     name_col = _detect_col(df, "name", "player")
     pos_col  = _detect_col(df, "pos", "position")
@@ -77,7 +63,6 @@ def _salary_index_from_df(df: "pd.DataFrame"):
     sal_col  = _detect_col(df, "salary", "sal", "cost")
 
     df2 = df.copy()
-
     if sal_col and sal_col in df2.columns:
         df2[sal_col] = pd.to_numeric(df2[sal_col], errors="coerce")
 
@@ -97,7 +82,6 @@ def _salary_index_from_df(df: "pd.DataFrame"):
         sal  = r.get(sal_col) if sal_col else None
         salf = float(sal) if sal is not None and (not pd or pd.isna(sal) is False) else None
 
-        # name-based maps
         if salf is not None:
             if key_exact: name_to_salary[key_exact] = salf
             if key_fl:    name_to_salary.setdefault(key_fl, salf)
@@ -108,7 +92,6 @@ def _salary_index_from_df(df: "pd.DataFrame"):
             if key_exact: name_to_team[key_exact] = team
             if key_fl:    name_to_team.setdefault(key_fl, team)
 
-        # id-based direct index (most reliable)
         if id_col:
             pid_raw = r.get(id_col)
             if pid_raw is not None and (not pd or pd.isna(pid_raw) is False):
@@ -122,14 +105,9 @@ def _salary_index_from_df(df: "pd.DataFrame"):
                         "salary": salf,
                     }
 
-    return id_to_row, name_to_salary, name_to_pos, name_to_team, {
-        "cols": {"id": id_col, "name": name_col, "pos": pos_col, "team": team_col, "sal": sal_col}
-    }
+    return id_to_row, name_to_salary, name_to_pos, name_to_team, {"cols": {"id": id_col}}
 
 
-# -----------------------
-# fuzzy helpers
-# -----------------------
 def _rf_extract(name_key: str, keys, scorer, cutoff: int):
     if not process or not scorer: return None
     try:
@@ -171,15 +149,7 @@ def _fuzzy_lookup(name_key: str, table: Dict[str, float], primary_cutoff=91, sec
     return None
 
 
-# -----------------------
-# main
-# -----------------------
 def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Priority:
-      1) If salary sheet has an ID column, map starters by player_id -> (name,pos,team,salary)
-      2) Else try exact name (First Last & Last, First), then fuzzy, then pos/team-constrained fuzzy
-    """
     if pd is None:
         return {}
 
@@ -202,7 +172,6 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
             pid = str(p.get("id") or "").strip()
             pts = _safe_float(p.get("score"), 0.0)
 
-            # --- ID-FIRST: if we have the row, we trust it completely
             row = id_to_row.get(pid)
             if row:
                 display = _first_last(row.get("name_fl") or row.get("name_raw") or "")
@@ -210,7 +179,6 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
                 team = row.get("team")
                 salary = row.get("salary")
             else:
-                # Fallback to players_map + name-based salary matching
                 pm = players_map.get(pid) or {}
                 pm_name = pm.get("name") or (p.get("name") or "")
                 display = _first_last(pm_name) if pm_name else pid
@@ -220,16 +188,13 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
                 key_fl = _clean_key(display)
                 key_raw = _clean_key(pm_name)
 
-                # Prefer subset-by-pos/team first (tighter)
                 salary = _subset_then_fuzzy(key_fl, pos, team, name_to_salary, name_to_pos, name_to_team)
                 if salary is None and key_raw != key_fl:
                     salary = _subset_then_fuzzy(key_raw, pos, team, name_to_salary, name_to_pos, name_to_team)
-                # Exact names
                 if salary is None:
                     for k in (key_fl, key_raw):
                         if k in name_to_salary:
                             salary = name_to_salary[k]; break
-                # Loose fuzzy
                 if salary is None:
                     salary = _fuzzy_lookup(key_fl, name_to_salary)
                 if salary is None and key_raw != key_fl:
@@ -258,7 +223,7 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
             "franchise_ids": set(),
         })
         node["pts"] = max(node["pts"], r.get("pts") or 0.0)
-        node["franchise_ids"].add(r.get("franchise_id"))
+        node["franchise_ids"].add(r["franchise_id"])
 
     top_performers = sorted(
         [{"player": v["player"], "pos": v["pos"], "team": v["team"], "pts": v["pts"], "franchise_ids": sorted(list(v["franchise_ids"]))}
@@ -269,11 +234,8 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
 
     with_ppk = [r for r in starters if r.get("ppk") is not None]
     top_values = sorted(with_ppk, key=lambda r: (r["ppk"], r["pts"]), reverse=True)[:10]
+    top_busts  = sorted(with_ppk, key=lambda r: (r["ppk"], -r["pts"]))[:10]
 
-    # Busts = worst ppk (lowest first). Keep 10.
-    top_busts = sorted(with_ppk, key=lambda r: (r["ppk"], -r["pts"]))[:10]
-
-    # By-position leaders (top 10 by ppk)
     by_pos: Dict[str, List[Dict[str, Any]]] = {}
     for r in with_ppk:
         by_pos.setdefault((r.get("pos") or "UNK").upper(), []).append(r)
@@ -301,11 +263,15 @@ def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
         })
     team_eff.sort(key=lambda r: ((r["ppk"] or 0.0), r["total_pts"]), reverse=True)
 
+    # tiny log line for sanity (shows we actually had salaries)
+    with_ppk_cnt = len(with_ppk)
+    print(f"[value_engine] starters={len(starters)} with_salary={with_ppk_cnt}")
+
     return {
         "top_values": top_values,
         "top_busts": top_busts,
         "by_pos": by_pos,
         "team_efficiency": team_eff,
         "top_performers": top_performers,
-        "samples": {"starters": len(starters), "with_ppk": len(with_ppk)},
+        "samples": {"starters": len(starters), "with_ppk": with_ppk_cnt},
     }
