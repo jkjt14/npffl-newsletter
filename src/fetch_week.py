@@ -10,7 +10,6 @@ def _get_api_key() -> str:
 
 
 def _base_url(year: int) -> str:
-    # Stick to your league's shard
     return f"https://www46.myfantasyleague.com/{year}"
 
 
@@ -33,82 +32,84 @@ def _first_last(name: str) -> str:
     return name
 
 
-def _players_map_from_player_scores(year: int, league_id: str, week: int) -> Dict[str, Dict[str, str]]:
+def _last_first_from_fl(fl: str) -> str:
+    toks = [t for t in (fl or "").split(" ") if t]
+    if len(toks) >= 2:
+        return f"{toks[-1]}, {' '.join(toks[:-1])}"
+    return fl
+
+
+def _players_directory(year: int, league_id: str) -> Dict[str, Dict[str, str]]:
     """
-    Build player map from this week's playerScores.
-    IMPORTANT: some shards use 'playerScores.playerScore' (singular key).
+    Pull the full players directory so we get canonical MFL names.
+    Works even if weekly endpoints omit a 'name' field in some shards.
     """
     url = f"{_base_url(year)}/export"
-    params = {"TYPE": "playerScores", "L": str(league_id), "W": str(week)}
+    params = {"TYPE": "players", "L": str(league_id), "DETAILS": 1}
     apikey = _get_api_key()
     if apikey:
         params["APIKEY"] = apikey
     data = _get_json(url, params)
-    out: Dict[str, Dict[str, str]] = {}
-    ps = (data or {}).get("playerScores")
 
-    rows: List[Dict[str, Any]] = []
-    if isinstance(ps, dict):
-        # handle both shapes
-        if isinstance(ps.get("player"), list):
-            rows = ps.get("player") or []
-        elif isinstance(ps.get("playerScore"), list):
-            rows = ps.get("playerScore") or []
+    out: Dict[str, Dict[str, str]] = {}
+    node = (data or {}).get("players") or {}
+    rows = node.get("player") or []
+    if isinstance(rows, dict):
+        rows = [rows]
 
     for p in rows:
         pid = str(p.get("id") or "").strip()
         if not pid:
             continue
-        nm = _first_last(p.get("name") or "")
+        raw = (p.get("name") or "").strip()
+        fl = _first_last(raw)
+        lf = _last_first_from_fl(fl)
         pos = str(p.get("position") or p.get("pos") or "").strip()
         team = str(p.get("team") or "").strip()
-        out[pid] = {"name": nm or pid, "pos": pos, "team": team}
+        out[pid] = {
+            "raw": raw,          # e.g., "Allen, Josh"
+            "first_last": fl,    # "Josh Allen"
+            "last_first": lf,    # "Allen, Josh"
+            "pos": pos,
+            "team": team,
+        }
     return out
 
 
-def _collect_missing_ids(weekly_results: Dict[str, Any], players_map: Dict[str, Any]) -> List[str]:
-    wr = weekly_results.get("weeklyResults") if isinstance(weekly_results, dict) else None
-    fr = (wr.get("franchise") if isinstance(wr, dict) else None) or []
-    if isinstance(fr, dict):
-        fr = [fr]
-    missing: Set[str] = set()
-    for f in fr:
-        for p in (f.get("player") or []):
-            pid = str(p.get("id") or "").strip()
-            if not pid:
-                continue
-            pm = players_map.get(pid)
-            if not pm or not (pm.get("name") and pm.get("name") != pid):
-                missing.add(pid)
-    return sorted(list(missing))
-
-
-def _enrich_player_info(year: int, ids: List[str], players_map: Dict[str, Any]) -> None:
-    if not ids:
-        return
+def _weekly_results(year: int, league_id: str, week: int) -> Dict[str, Any]:
     url = f"{_base_url(year)}/export"
-    BATCH = 150
-    for i in range(0, len(ids), BATCH):
-        chunk = ids[i:i + BATCH]
-        data = _get_json(url, {"TYPE": "playerInfo", "P": ",".join(chunk)})
-        node = (data.get("players") or data.get("playerInfo")) if isinstance(data, dict) else None
-        rows = []
-        if isinstance(node, dict):
-            if isinstance(node.get("player"), list):
-                rows = node["player"]
-        for p in rows:
-            pid = str(p.get("id") or "").strip()
-            if not pid:
-                continue
-            nm = _first_last(p.get("name") or "")
-            pos = str(p.get("position") or p.get("pos") or "").strip()
-            team = str(p.get("team") or "").strip()
-            base = players_map.get(pid) or {}
-            players_map[pid] = {
-                "name": nm or base.get("name") or pid,
-                "pos": base.get("pos") or pos,
-                "team": base.get("team") or team,
-            }
+    params = {"TYPE": "weeklyResults", "L": str(league_id), "W": str(week)}
+    apikey = _get_api_key()
+    if apikey:
+        params["APIKEY"] = apikey
+    return _get_json(url, params)
+
+
+def _standings(year: int, league_id: str) -> Dict[str, Any]:
+    url = f"{_base_url(year)}/export"
+    params = {"TYPE": "leagueStandings", "L": str(league_id), "COLUMN_NAMES": "", "ALL": "", "WEB": ""}
+    apikey = _get_api_key()
+    if apikey:
+        params["APIKEY"] = apikey
+    return _get_json(url, params)
+
+
+def _pool(year: int, league_id: str) -> Dict[str, Any]:
+    url = f"{_base_url(year)}/export"
+    params = {"TYPE": "pool", "L": str(league_id), "POOLTYPE": "NFL"}
+    apikey = _get_api_key()
+    if apikey:
+        params["APIKEY"] = apikey
+    return _get_json(url, params)
+
+
+def _survivor(year: int, league_id: str) -> Dict[str, Any]:
+    url = f"{_base_url(year)}/export"
+    params = {"TYPE": "survivorPool", "L": str(league_id)}
+    apikey = _get_api_key()
+    if apikey:
+        params["APIKEY"] = apikey
+    return _get_json(url, params)
 
 
 def fetch_week_data(client, week: int) -> Dict[str, Any]:
@@ -117,22 +118,16 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
     if not year or not league_id:
         raise ValueError("fetch_week_data: client must expose .year and .league_id")
 
-    base = _base_url(year)
-    apikey = _get_api_key()
+    # Pull all primary data
+    weekly_results = _weekly_results(year, league_id, week)
+    standings_json = _standings(year, league_id)
+    pool_nfl = _pool(year, league_id)
+    survivor_pool = _survivor(year, league_id)
+    players_dir = _players_directory(year, league_id)
 
-    # Weekly results (who actually started)
-    wr_params = {"TYPE": "weeklyResults", "L": str(league_id), "W": str(week)}
-    if apikey:
-        wr_params["APIKEY"] = apikey
-    weekly_results = _get_json(f"{base}/export", wr_params)
-
-    # Standings (names + VP)
-    st_params = {"TYPE": "leagueStandings", "L": str(league_id), "COLUMN_NAMES": "", "ALL": "", "WEB": ""}
-    if apikey:
-        st_params["APIKEY"] = apikey
-    standings_json = _get_json(f"{base}/export", st_params)
+    # franchise name map for pretty printing
     fmap: Dict[str, str] = {}
-    standings_rows = []
+    standings_rows: List[Dict[str, Any]] = []
     ls = (standings_json or {}).get("leagueStandings")
     if isinstance(ls, dict):
         for fr in (ls.get("franchise") or []):
@@ -149,33 +144,13 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
                 vp = 0.0
             standings_rows.append({"id": fid, "name": nm, "pf": pf, "vp": vp})
 
-    # Pools
-    pool_params = {"TYPE": "pool", "L": str(league_id), "POOLTYPE": "NFL"}
-    if apikey:
-        pool_params["APIKEY"] = apikey
-    pool_nfl = _get_json(f"{base}/export", pool_params)
-
-    sv_params = {"TYPE": "survivorPool", "L": str(league_id)}
-    if apikey:
-        sv_params["APIKEY"] = apikey
-    survivor_pool = _get_json(f"{base}/export", sv_params)
-
-    # ✅ Player map from playerScores (now handles both keys)
-    players_map = _players_map_from_player_scores(year, str(league_id), week)
-
-    # Enrich any missing IDs with playerInfo
-    missing_ids = _collect_missing_ids(weekly_results, players_map)
-    if missing_ids:
-        _enrich_player_info(year, missing_ids, players_map)
-
-    # lightweight instrumentation (helps debugging in logs)
-    print(f"[fetch_week] players_map size: {len(players_map)}; enriched: {len(missing_ids)} missing IDs")
+    print(f"[fetch_week] players_dir size: {len(players_dir)}")
 
     return {
         "weekly_results": weekly_results,
         "standings_rows": standings_rows,
         "pool_nfl": pool_nfl,
         "survivor_pool": survivor_pool,
-        "players_map": players_map,
+        "players_map": players_dir,   # id -> {raw, first_last, last_first, pos, team}
         "franchise_names": fmap,
     }
