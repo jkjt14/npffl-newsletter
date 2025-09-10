@@ -1,277 +1,178 @@
 from __future__ import annotations
-
+from typing import Any, Dict, List, Optional
 import re
-from typing import Any, Dict, List
-
-try:
-    import pandas as pd
-except Exception:
-    pd = None
-
-try:
-    from rapidfuzz import process, fuzz
-except Exception:
-    process = None
-    fuzz = None
-
+import pandas as pd
+from rapidfuzz import process, fuzz
 
 def _as_list(x):
     if isinstance(x, list): return x
     if isinstance(x, dict): return [x]
     return []
 
-def _clean_key(n: str) -> str:
-    n = (n or "").strip()
-    n = re.sub(r"[^A-Za-z0-9 ,.'-]+", " ", n)
-    n = re.sub(r"\s+", " ", n)
-    return n.lower()
-
-def _first_last(name: str) -> str:
-    if not name: return name
-    parts = [p.strip() for p in name.split(",")]
-    if len(parts) == 2:
-        last, first = parts[0], parts[1]
-        return f"{first} {last}"
-    return name
-
-def _ppk(points: float, salary: float):
+def _ppk(points: float, salary: Optional[float]):
     if salary and salary > 0:
         return round(points / (salary / 1000.0), 4)
     return None
 
-def _safe_float(x, default=0.0) -> float:
-    try: return float(x)
-    except Exception: return float(default)
+def _clean_name(n: str) -> str:
+    if not n: return ""
+    n = n.strip()
+    n = re.sub(r"\([^)]*\)", "", n)
+    n = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b\.?", "", n, flags=re.I)
+    n = re.sub(r"[^A-Za-z0-9 ,.'-]+", " ", n)
+    return re.sub(r"\s+", " ", n).strip().lower()
 
+def _first_last(n: str) -> str:
+    if not n: return ""
+    if "," in n:
+        last, first = [t.strip() for t in n.split(",", 1)]
+        return f"{first} {last}".strip()
+    return n.strip()
 
-_ID_CANDIDATES = ["id", "playerid", "mfl_id", "player id", "mfl id"]
+def _last_first(fl: str) -> str:
+    toks = [t for t in (fl or "").split(" ") if t]
+    if len(toks) >= 2:
+        return f"{toks[-1]}, {' '.join(toks[:-1])}"
+    return fl
 
-def _detect_col(df: "pd.DataFrame", *cands: str) -> str | None:
-    cols = {c.lower(): c for c in df.columns}
-    for c in cands:
-        if c in cols: return cols[c]
+def _build_salary_indices(df: pd.DataFrame):
+    name_salary: Dict[str, float] = {}
+    name_pos: Dict[str, str] = {}
+    name_team: Dict[str, str] = {}
+    for _, r in df.iterrows():
+        sal = r.get("_salary")
+        if pd.isna(sal):
+            continue
+        for k in (r.get("_fl_key"), r.get("_lf_key")):
+            if not k: 
+                continue
+            name_salary[k] = float(sal)
+            p = (r.get("_pos") or "").upper()
+            t = (r.get("_team") or "").upper()
+            if p: name_pos[k] = p
+            if t: name_team[k] = t
+    print(f"[value_engine] salary name keys: {len(name_salary)}")
+    return name_salary, name_pos, name_team
+
+def _best_salary_for_name(candidates: List[str], pos: str, team: str,
+                          name_salary: Dict[str, float],
+                          name_pos: Dict[str, str],
+                          name_team: Dict[str, str]) -> Optional[float]:
+    # exact key match first
+    for k in candidates:
+        if k in name_salary:
+            return name_salary[k]
+
+    # pos/team constrained fuzzy
+    subset = []
+    upos, uteam = (pos or "").upper(), (team or "").upper()
+    for k in name_salary.keys():
+        kp = (name_pos.get(k) or "").upper()
+        kt = (name_team.get(k) or "").upper()
+        if (upos and kp == upos) or (uteam and kt == uteam):
+            subset.append(k)
+    for src in (subset, list(name_salary.keys())):
+        if not src:
+            continue
+        hit = process.extractOne(candidates[0], src, scorer=fuzz.WRatio, score_cutoff=68)
+        if hit:
+            return name_salary[hit[0]]
     return None
 
-def _salary_index_from_df(df: "pd.DataFrame"):
-    if df is None or getattr(df, "empty", True):
-        return {}, {}, {}, {}, {}
-
-    id_col   = _detect_col(df, *_ID_CANDIDATES)
-    name_col = _detect_col(df, "name", "player")
-    pos_col  = _detect_col(df, "pos", "position")
-    team_col = _detect_col(df, "team", "nfl", "nfl team")
-    sal_col  = _detect_col(df, "salary", "sal", "cost")
-
-    df2 = df.copy()
-    if sal_col and sal_col in df2.columns:
-        df2[sal_col] = pd.to_numeric(df2[sal_col], errors="coerce")
-
-    id_to_row: Dict[str, Dict[str, Any]] = {}
-    name_to_salary: Dict[str, float] = {}
-    name_to_pos: Dict[str, str] = {}
-    name_to_team: Dict[str, str] = {}
-
-    for _, r in df2.iterrows():
-        nm_raw = str(r.get(name_col) or "").strip() if name_col else ""
-        nm_fl  = _first_last(nm_raw) if nm_raw else ""
-        key_exact = _clean_key(nm_raw)
-        key_fl    = _clean_key(nm_fl) if nm_fl else key_exact
-
-        pos  = str(r.get(pos_col) or "").strip() if pos_col else ""
-        team = str(r.get(team_col) or "").strip() if team_col else ""
-        sal  = r.get(sal_col) if sal_col else None
-        salf = float(sal) if sal is not None and (not pd or pd.isna(sal) is False) else None
-
-        if salf is not None:
-            if key_exact: name_to_salary[key_exact] = salf
-            if key_fl:    name_to_salary.setdefault(key_fl, salf)
-        if pos:
-            if key_exact: name_to_pos[key_exact] = pos
-            if key_fl:    name_to_pos.setdefault(key_fl, pos)
-        if team:
-            if key_exact: name_to_team[key_exact] = team
-            if key_fl:    name_to_team.setdefault(key_fl, team)
-
-        if id_col:
-            pid_raw = r.get(id_col)
-            if pid_raw is not None and (not pd or pd.isna(pid_raw) is False):
-                pid = str(pid_raw).strip()
-                if pid:
-                    id_to_row[pid] = {
-                        "name_raw": nm_raw,
-                        "name_fl": nm_fl or nm_raw,
-                        "pos": pos,
-                        "team": team,
-                        "salary": salf,
-                    }
-
-    return id_to_row, name_to_salary, name_to_pos, name_to_team, {"cols": {"id": id_col}}
-
-
-def _rf_extract(name_key: str, keys, scorer, cutoff: int):
-    if not process or not scorer: return None
-    try:
-        return process.extractOne(name_key, keys, scorer=scorer, score_cutoff=cutoff)
-    except Exception:
-        return None
-
-def _subset_then_fuzzy(name_key: str, pos: str, team: str,
-                       name_to_salary: Dict[str, float],
-                       name_to_pos: Dict[str, str],
-                       name_to_team: Dict[str, str]) -> float | None:
-    if not process or not fuzz or not name_to_salary:
-        return None
-    pos = (pos or "").upper()
-    team = (team or "").upper()
-
-    subset_keys = []
-    for k in name_to_salary.keys():
-        kp = (name_to_pos.get(k) or "").upper()
-        kt = (name_to_team.get(k) or "").upper()
-        if (pos and kp == pos) or (team and kt == team):
-            subset_keys.append(k)
-    if not subset_keys:
-        return None
-
-    res = _rf_extract(name_key, subset_keys, fuzz.token_sort_ratio, 82)
-    if res: return name_to_salary[res[0]]
-    res2 = _rf_extract(name_key, subset_keys, fuzz.token_set_ratio, 78)
-    if res2: return name_to_salary[res2[0]]
-    return None
-
-def _fuzzy_lookup(name_key: str, table: Dict[str, float], primary_cutoff=91, secondary_cutoff=86) -> float | None:
-    if not name_key or not table or not process or not fuzz:
-        return None
-    res = _rf_extract(name_key, table.keys(), fuzz.token_sort_ratio, primary_cutoff)
-    if res:  return table[res[0]]
-    res2 = _rf_extract(name_key, table.keys(), fuzz.token_set_ratio, secondary_cutoff)
-    if res2: return table[res2[0]]
-    return None
-
-
-def compute_values(salary_df, week_data: Dict[str, Any]) -> Dict[str, Any]:
-    if pd is None:
-        return {}
-
-    id_to_row, name_to_salary, name_to_pos, name_to_team, _meta = _salary_index_from_df(salary_df)
-    players_map = week_data.get("players_map") or {}
+def compute_values(salary_df: pd.DataFrame, week_data: Dict[str, Any]) -> Dict[str, Any]:
+    name_salary, name_pos, name_team = _build_salary_indices(salary_df)
+    players_dir: Dict[str, Dict[str, str]] = week_data.get("players_map") or {}
 
     wr = week_data.get("weekly_results") or {}
     wr_root = wr.get("weeklyResults") if isinstance(wr, dict) else None
     franchises = _as_list(wr_root.get("franchise") if isinstance(wr_root, dict) else None)
 
     starters: List[Dict[str, Any]] = []
+    unmatched_samples: List[str] = []
 
     for fr in franchises:
-        fid = fr.get("id") or "unknown"
+        fid = str(fr.get("id") or "").strip() or "unknown"
         for p in _as_list(fr.get("player")):
-            st = str(p.get("status") or "").lower()
+            # started only; treat empty as started (some shards omit 'status')
+            st = (p.get("status") or "").lower()
             if st and st not in ("starter", "s"):
                 continue
 
             pid = str(p.get("id") or "").strip()
-            pts = _safe_float(p.get("score"), 0.0)
+            pts = float(p.get("score") or 0.0)
 
-            row = id_to_row.get(pid)
-            if row:
-                display = _first_last(row.get("name_fl") or row.get("name_raw") or "")
-                pos = row.get("pos")
-                team = row.get("team")
-                salary = row.get("salary")
-            else:
-                pm = players_map.get(pid) or {}
-                pm_name = pm.get("name") or (p.get("name") or "")
-                display = _first_last(pm_name) if pm_name else pid
-                pos = pm.get("pos") or p.get("position")
-                team = pm.get("team") or p.get("team")
+            meta = players_dir.get(pid) or {}
+            raw = meta.get("raw") or (p.get("name") or "")
+            fl  = meta.get("first_last") or _first_last(raw)
+            lf  = meta.get("last_first") or _last_first(fl)
+            pos = (meta.get("pos") or p.get("position") or "").upper()
+            team= (meta.get("team") or p.get("team") or "").upper()
 
-                key_fl = _clean_key(display)
-                key_raw = _clean_key(pm_name)
+            # candidate keys — exact then fuzzy
+            cands = [_clean_name(x) for x in (fl, lf, raw) if x]
 
-                salary = _subset_then_fuzzy(key_fl, pos, team, name_to_salary, name_to_pos, name_to_team)
-                if salary is None and key_raw != key_fl:
-                    salary = _subset_then_fuzzy(key_raw, pos, team, name_to_salary, name_to_pos, name_to_team)
-                if salary is None:
-                    for k in (key_fl, key_raw):
-                        if k in name_to_salary:
-                            salary = name_to_salary[k]; break
-                if salary is None:
-                    salary = _fuzzy_lookup(key_fl, name_to_salary)
-                if salary is None and key_raw != key_fl:
-                    salary = _fuzzy_lookup(key_raw, name_to_salary)
+            salary = _best_salary_for_name(cands, pos, team, name_salary, name_pos, name_team)
+            if salary is None and len(unmatched_samples) < 8:
+                unmatched_samples.append(f"{fl} [{pos}/{team}]")
 
             starters.append({
                 "player_id": pid,
-                "player": display,
+                "player": fl or raw or pid,
                 "pos": pos,
                 "team": team,
                 "salary": salary,
                 "pts": pts,
                 "franchise_id": fid,
-                "ppk": _ppk(pts, salary) if salary else None,
+                "ppk": _ppk(pts, salary),
             })
 
-    # Aggregate top performers (dedupe by player+pos)
-    perf: Dict[str, Dict[str, Any]] = {}
+    with_sal = [r for r in starters if r.get("salary")]
+    print(f"[value_engine] starters={len(starters)} with_salary={len(with_sal)}")
+    if with_sal and len(with_sal) < len(starters) // 2 and unmatched_samples:
+        print("[value_engine] sample unmatched:", "; ".join(unmatched_samples))
+
+    # Top performers (unique by player+pos)
+    agg: Dict[str, Dict[str, Any]] = {}
     for r in starters:
-        key = (r.get("player") or "").lower() + "|" + (r.get("pos") or "")
-        node = perf.setdefault(key, {
-            "player": r.get("player"),
-            "pos": r.get("pos"),
-            "team": r.get("team"),
-            "pts": 0.0,
-            "franchise_ids": set(),
-        })
-        node["pts"] = max(node["pts"], r.get("pts") or 0.0)
+        k = (r["player"].lower(), r.get("pos") or "")
+        node = agg.setdefault(k, {"player": r["player"], "pos": r.get("pos"), "team": r.get("team"),
+                                  "pts": 0.0, "franchise_ids": set()})
+        node["pts"] = max(node["pts"], r["pts"])
         node["franchise_ids"].add(r["franchise_id"])
 
     top_performers = sorted(
-        [{"player": v["player"], "pos": v["pos"], "team": v["team"], "pts": v["pts"], "franchise_ids": sorted(list(v["franchise_ids"]))}
-         for v in perf.values()],
-        key=lambda r: r["pts"],
-        reverse=True
+        [{"player": v["player"], "pos": v["pos"], "team": v["team"], "pts": v["pts"],
+          "franchise_ids": sorted(list(v["franchise_ids"]))}
+         for v in agg.values()],
+        key=lambda x: x["pts"], reverse=True
     )[:10]
 
-    with_ppk = [r for r in starters if r.get("ppk") is not None]
+    # Values / Busts (pts per $1K)
+    with_ppk = [r for r in with_sal if r.get("ppk") is not None]
     top_values = sorted(with_ppk, key=lambda r: (r["ppk"], r["pts"]), reverse=True)[:10]
     top_busts  = sorted(with_ppk, key=lambda r: (r["ppk"], -r["pts"]))[:10]
 
-    by_pos: Dict[str, List[Dict[str, Any]]] = {}
-    for r in with_ppk:
-        by_pos.setdefault((r.get("pos") or "UNK").upper(), []).append(r)
-    for pos, rows in list(by_pos.items()):
-        by_pos[pos] = sorted(rows, key=lambda r: r["ppk"], reverse=True)[:10]
-
     # Team efficiency
-    team_stats: Dict[str, Dict[str, float]] = {}
+    team_totals: Dict[str, Dict[str, float]] = {}
     for r in starters:
-        fid = r["franchise_id"]
-        team_stats.setdefault(fid, {"pts": 0.0, "sal": 0.0})
-        team_stats[fid]["pts"] += _safe_float(r["pts"], 0.0)
-        if r.get("salary") is not None:
-            team_stats[fid]["sal"] += float(r["salary"])
+        d = team_totals.setdefault(r["franchise_id"], {"pts": 0.0, "sal": 0.0})
+        d["pts"] += float(r["pts"] or 0.0)
+        if r.get("salary"):
+            d["sal"] += float(r["salary"])
 
     team_eff = []
-    for fid, agg in team_stats.items():
-        total_pts = round(agg["pts"], 2)
-        total_sal = int(agg["sal"]) if agg["sal"] else 0
-        team_eff.append({
-            "franchise_id": fid,
-            "total_pts": total_pts,
-            "total_sal": total_sal,
-            "ppk": _ppk(total_pts, agg["sal"]) if agg["sal"] else None
-        })
-    team_eff.sort(key=lambda r: ((r["ppk"] or 0.0), r["total_pts"]), reverse=True)
+    for fid, d in team_totals.items():
+        total_pts = round(d["pts"], 2)
+        total_sal = int(d["sal"]) if d["sal"] else 0
+        team_eff.append({"franchise_id": fid, "total_pts": total_pts,
+                         "total_sal": total_sal, "ppk": _ppk(total_pts, d["sal"])})
 
-    # tiny log line for sanity (shows we actually had salaries)
-    with_ppk_cnt = len(with_ppk)
-    print(f"[value_engine] starters={len(starters)} with_salary={with_ppk_cnt}")
+    team_eff.sort(key=lambda r: ((r["ppk"] or 0.0), r["total_pts"]), reverse=True)
 
     return {
         "top_values": top_values,
         "top_busts": top_busts,
-        "by_pos": by_pos,
         "team_efficiency": team_eff,
         "top_performers": top_performers,
-        "samples": {"starters": len(starters), "with_ppk": with_ppk_cnt},
+        "samples": {"starters": len(starters), "with_salary": len(with_sal)},
     }
