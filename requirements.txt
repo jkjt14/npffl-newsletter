@@ -1,10 +1,7 @@
-pandas
-python-dateutil
-requests
-beautifulsoup4
-lxml
-rapidfuzz
 jinja2
+pandas
+numpy
+pyyaml
 markdown
 openpyxl
-PyYAML
+requests
