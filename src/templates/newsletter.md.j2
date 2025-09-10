@@ -1,31 +1,25 @@
 # {{ title }} — Week {{ week }}
 
+_Year {{ year }}, League {{ league_id }}_
+
+## Standings Snapshot
+| Team | PF | VP |
+|---|---:|---:|
+{% for r in standings %}
+| {{ r.name }} | {{ '%.1f'|format(r.pf) }} | {{ r.vp }} |
+{% endfor %}
+
 ## Top Values (Pts per $1K)
 {% for r in best_individual %}
-- **{{ r.Name }}** — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary or 0) }} → **{{ '%.2f'|format(r.Pts_per_$K) }} pts/$1K**. {{ r.Roast }}
+- **{{ r.Name }}** ({{ r.Pos }} {{ r.Team }}) — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary) }} → **{{ '%.2f'|format(r.Pts_per_$K) }} pts/$1K**
 {% endfor %}
 
 ## Biggest Busts (Costly Duds)
 {% for r in worst_individual %}
-- **{{ r.Name }}** — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary or 0) }} → **{{ '%.2f'|format(r.Pts_per_$K) }} pts/$1K**. {{ r.Roast }}
+- **{{ r.Name }}** ({{ r.Pos }} {{ r.Team }}) — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary) }} → **{{ '%.2f'|format(r.Pts_per_$K) }} pts/$1K**
 {% endfor %}
 
-## Team Value Leaderboard
-**Steals of the Week**
-{% for t in team_best %}
-- **{{ t.FranchiseName }}** — Avg **{{ '%.2f'|format(t.Avg_Pts_per_$K) }} pts/$1K**, Total {{ '%.1f'|format(t.Total_Points) }} pts
+## Lines to Watch
+{% for o in odds %}
+- **{{ o.matchup }}** — spread {{ o.spread }}, total {{ o.total }}
 {% endfor %}
-
-**Dumpster Fires**
-{% for t in team_worst %}
-- **{{ t.FranchiseName }}** — Avg **{{ '%.2f'|format(t.Avg_Pts_per_$K) }} pts/$1K**, Total {{ '%.1f'|format(t.Total_Points) }} pts
-{% endfor %}
-
-## Standings (S2D)
-{{ standings_text }}
-
-## Survivor Pool
-{{ survivor_text }}
-
-## Confidence Pick’em
-{{ pickem_text }}
