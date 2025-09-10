@@ -11,12 +11,12 @@ _Year {{ year }}, League {{ league_id }}_
 
 ## Top Values (Pts per $1K)
 {% for r in best_individual %}
-- **{{ r.Name }}** ({{ r.Pos }} {{ r.Team }}) — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary) }} → **{{ '%.2f'|format(r.Pts_per_$K) }} pts/$1K**
+- **{{ r.Name }}** ({{ r.Pos }} {{ r.Team }}) — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary) }} → **{{ '%.2f'|format(r.Pts_per_K) }} pts/$1K**
 {% endfor %}
 
 ## Biggest Busts (Costly Duds)
 {% for r in worst_individual %}
-- **{{ r.Name }}** ({{ r.Pos }} {{ r.Team }}) — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary) }} → **{{ '%.2f'|format(r.Pts_per_$K) }} pts/$1K**
+- **{{ r.Name }}** ({{ r.Pos }} {{ r.Team }}) — {{ '%.1f'|format(r.Pts) }} pts on ${{ '%.0f'|format(r.Salary) }} → **{{ '%.2f'|format(r.Pts_per_K) }} pts/$1K**
 {% endfor %}
 
 ## Lines to Watch
