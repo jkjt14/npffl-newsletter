@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
 import statistics, random, re
-from collections import Counter
+from collections import Counter, defaultdict
 
 # ----------------------------
 # Tiny prose helpers
@@ -33,7 +33,6 @@ def _fmt2(x: float | int | None, default="0.00") -> str:
     except Exception: return default
 
 def _collapse(items: List[str], n: int) -> List[str]:
-    """Most frequent first, capped at n."""
     c = Counter([s.strip() for s in items if s and str(s).strip()])
     return [k for k,_ in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))][:n]
 
@@ -91,24 +90,32 @@ _HEAD_TEMPLATES = [
 def headliners_blurb(rows: List[Dict[str, Any]]) -> str:
     """Turn top player outputs into team stories with phrasing variety."""
     if not rows: return ""
-    # Build {team: [ "Player 33.8", ... ]}
     team_plays: Dict[str, List[str]] = {}
     for h in rows[:10]:
         who = (h.get("player") or "").strip() or "Somebody"
         pts = _fmt2(h.get("pts"))
-        play = f"{who} {pts}"
+        token = f"{who} {pts}"
         for team in h.get("managers", []):
-            team_plays.setdefault(team, []).append(play)
+            team_plays.setdefault(team, []).append(token)
 
     if not team_plays:
         return ""
 
-    # Pick up to 4 teams with the most headline plays
     lines: List[str] = []
     ordered = sorted(team_plays.items(), key=lambda kv: -len(kv[1]))[:4]
     pb = ProseBuilder()
     for team, plays in ordered:
-        top2 = ", ".join(plays[:2])
+        # Use unique players per team line
+        uniq = []
+        seen = set()
+        for p in plays:
+            name = p.split(" ", 1)[0]
+            if name not in seen:
+                uniq.append(p)
+                seen.add(name)
+            if len(uniq) == 2:
+                break
+        top2 = ", ".join(uniq) if uniq else ", ".join(plays[:2])
         tmpl = pb.choose(_HEAD_TEMPLATES)
         lines.append(tmpl.format(team=team, plays=top2))
 
@@ -116,7 +123,7 @@ def headliners_blurb(rows: List[Dict[str, Any]]) -> str:
     return " ".join(lines) + " " + closer
 
 # ----------------------------
-# Values / Busts (story, not lists)
+# Values / Busts (TEAM story, deduped)
 # ----------------------------
 
 _VAL_OPENERS = [
@@ -130,36 +137,63 @@ _BUST_OPENERS = [
     "The tax bracket didn’t buy points here:",
 ]
 
-def _name_and_user_blurbs(rows: List[Dict[str, Any]], cap: int = 3) -> List[str]:
-    """Return short blurbs like 'Josh Allen (used by FlatFootWorks, Dominators)'."""
-    out: List[str] = []
-    for r in rows[:cap]:
-        nm = (r.get("player") or "Someone").strip()
+def _team_support_blurb(rows: List[Dict[str, Any]], cap_players: int = 2) -> List[Tuple[str, str]]:
+    """
+    Aggregate by team. Return [(team, 'P1, P2'), ...] sorted by count desc then alpha.
+    """
+    team_to_players: Dict[str, List[str]] = defaultdict(list)
+    team_counts: Counter = Counter()
+    for r in rows:
+        who = (r.get("player") or "Someone").strip()
         mans = r.get("managers") or []
-        if mans:
-            mans = sorted(mans)[:3]
-            out.append(f"{nm} (used by {', '.join(mans)})")
-        else:
-            out.append(nm)
+        for t in mans:
+            if who not in team_to_players[t]:
+                team_to_players[t].append(who)
+            team_counts[t] += 1
+    if not team_counts:
+        return []
+    ordered = sorted(team_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    out: List[Tuple[str,str]] = []
+    for team, _ in ordered[:3]:
+        names = team_to_players.get(team, [])[:cap_players]
+        out.append((team, ", ".join(names)))
     return out
 
 def values_blurb(values: List[Dict[str, Any]]) -> str:
     if not values: return "No value play broke the room this time."
     pb = ProseBuilder()
     opener = pb.choose(_VAL_OPENERS)
-    blurbs = _name_and_user_blurbs(values, 3)
-    middle = "; ".join(blurbs)
-    closer = pb.sentence("Edges come from quiet clicks, not loud salaries")
-    return pb.paragraph(pb.sentence(opener, middle), closer)
+    teams = _team_support_blurb(values, cap_players=2)
+    if not teams:
+        names = ", ".join(_collapse([v.get("player") for v in values], 3))
+        return pb.paragraph(pb.sentence(opener, names), "Edges come from quiet clicks, not loud salaries.")
+    leader = teams[0]
+    runner = teams[1] if len(teams) > 1 else None
+    lead_line = pb.sentence(f"**Biggest Heist:** {leader[0]} turned budget tags into real points with {leader[1]}")
+    if runner:
+        run_line = pb.sentence(f"**Runner-up:** {runner[0]} found similar juice with {runner[1]}")
+        close = pb.sentence("That’s how you buy ceiling without paying sticker")
+        return pb.paragraph(opener, lead_line, run_line, close)
+    close = pb.sentence("That’s how you buy ceiling without paying sticker")
+    return pb.paragraph(opener, lead_line, close)
 
 def busts_blurb(busts: List[Dict[str, Any]]) -> str:
     if not busts: return "Premium chalk held serve—no headline busts worth circling."
     pb = ProseBuilder()
     opener = pb.choose(_BUST_OPENERS)
-    blurbs = _name_and_user_blurbs(busts, 3)
-    middle = "; ".join(blurbs)
-    closer = pb.sentence("The cap hit was real; the points were not")
-    return pb.paragraph(pb.sentence(opener, middle), closer)
+    teams = _team_support_blurb(busts, cap_players=2)
+    if not teams:
+        names = ", ".join(_collapse([b.get("player") for b in busts], 3))
+        return pb.paragraph(pb.sentence(opener, names), "The cap hit was real; the points were not.")
+    leader = teams[0]
+    runner = teams[1] if len(teams) > 1 else None
+    lead_line = pb.sentence(f"**Overpriced Misfire:** {leader[0]} paid up and got little back—{leader[1]} led the regret")
+    if runner:
+        run_line = pb.sentence(f"**Honorable Mention:** {runner[0]} weren’t far behind on sunk cost")
+        close = pb.sentence("That’s a receipt nobody frames")
+        return pb.paragraph(opener, lead_line, run_line, close)
+    close = pb.sentence("That’s a receipt nobody frames")
+    return pb.paragraph(opener, lead_line, close)
 
 # ----------------------------
 # Power Vibes (season prose)
@@ -192,8 +226,13 @@ def _bold_score(rank: int, prob: float) -> float:
 def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], no_picks: List[str]) -> str:
     if not conf3 and not no_picks:
         return "No Confidence cards this week."
-
+    # Score teams and also surface a single “Upset Ticket”
     teams = []
+    upset_pick = None  # (team, code, prob, rank)
+    chalk_team = None  # team with highest sum(prob*rank)
+    best_bold, best_safe = -1.0, -1.0
+    safe_scores: Dict[str, float] = {}
+
     for row in conf3:
         t = row.get("team","Team")
         bold, safe = 0.0, 0.0
@@ -201,25 +240,30 @@ def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], n
             r = int(g.get("rank", 0))
             code = str(g.get("pick","")).upper()
             p = float(team_prob.get(code, 0.5))
-            bold += _bold_score(r, p)
+            # Track upset candidate (lowest prob with rank weight)
+            w = _bold_score(r, p)
+            if upset_pick is None or (w > 0 and p < (upset_pick[2] if upset_pick else 1.0)):
+                upset_pick = (t, code, p, r)
+            bold += w
             safe += r * p
         teams.append((t, bold, safe))
+        safe_scores[t] = safe
 
-    parts: List[str] = []
+    out: List[str] = []
     if teams:
-        bold_sorted = sorted(teams, key=lambda x: (-x[1], x[2], x[0]))
-        safe_sorted = sorted(teams, key=lambda x: (-x[2], x[1], x[0]))
-        # avoid echoing the same team in both spots
-        bold_names = [t for t,_,_ in bold_sorted if bold_sorted[0][1] > 0]
-        safe_names = [t for t,_,_ in safe_sorted if t not in bold_names]
+        teams.sort(key=lambda x: (-x[1], x[2], x[0]))
+        bold_names = [t for t,_,_ in teams if teams[0][1] > 0][:3]
         if bold_names:
-            parts.append(f"**Bold Board:** {', '.join(bold_names[:3])} pushed underdogs into the top slots and made it interesting.")
-        if safe_names:
-            parts.append(f"**Safety Blankets:** {', '.join(safe_names[:2])} wrapped the top in heavy favorites and slept fine.")
+            out.append(f"**Bold Board:** {', '.join(bold_names)} pushed underdogs into top slots and meant it.")
+        chalk_team = max(safe_scores.items(), key=lambda kv: kv[1])[0] if safe_scores else None
+        if chalk_team:
+            out.append(f"**Chalk Fortress:** {chalk_team} stacked heavy favorites and slept just fine.")
+    if upset_pick:
+        t, code, p, r = upset_pick
+        out.append(f"**Upset Ticket of the Week:** {t} slapped a rank-{r} on {code} ({int(round((1-p)*100))}% sweat) and got paid.")
     if no_picks:
-        parts.append(f"**Ghost Entries:** {', '.join(no_picks)} left their cards blank; excuses pending.")
-
-    return " ".join(parts) if parts else "Everything landed in the middle—no heroes, no villains."
+        out.append(f"**Ghost Entries:** {', '.join(no_picks)} left their cards blank; excuses pending.")
+    return " ".join(out) if out else "Everything landed in the middle—no heroes, no villains."
 
 # ----------------------------
 # Survivor (odds-driven narrative, no table)
@@ -233,12 +277,11 @@ def survivor_story(surv: List[Dict[str, Any]], team_prob: Dict[str, float], no_p
         picks = [(r.get("team","Team"), str(r.get("pick","")).upper(), float(team_prob.get(str(r.get("pick","")).upper(), 0.5))) for r in surv if r.get("pick")]
         if picks:
             picks.sort(key=lambda x: x[2])  # lowest prob = boldest
-            # Top 2 boldest, plus one honorable mention if exists
             bold = [f"{t} → {code}" for t,code,_ in picks[:2]]
             if len(picks) > 2:
                 bold.append(f"{picks[2][0]} → {picks[2][1]}")
             pieces.append(f"**Boldest Lifelines:** {', '.join(bold)} — tightrope stuff, clean landing.")
-            # Consensus: most common code
+            from collections import Counter
             codes = [c for _,c,_ in picks]
             common_code, _ = sorted(Counter(codes).items(), key=lambda x: (-x[1], x[0]))[0]
             pieces.append(f"**Boring Consensus:** {common_code} — training wheels on, ride completed.")
