@@ -3,7 +3,6 @@ import base64, mimetypes, html, traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Markdown rendering (with graceful fallback)
 try:
     import markdown as _md
     def _render_markdown(md_text: str) -> str:
@@ -54,33 +53,37 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     starters_idx = payload.get("starters_by_franchise")
     f_map = payload.get("franchise_names") or {}
     season_rank = payload.get("season_rankings") or []
-
     conf3 = payload.get("confidence_top3") or []
     team_prob = payload.get("team_prob") or {}
     conf_no = (payload.get("confidence_meta") or {}).get("no_picks", [])
     surv = payload.get("survivor_list") or []
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
-
     logos_dir = (payload.get("assets") or {}).get("banners_dir") or "assets/franchises"
 
-    # Roastbook with tone
     from . import roastbook as rb
     tone = rb.Tone(tone_name)
 
     out: List[str] = []
+    # — Intro blurb (new)
     out.append(f"# {title} — Week {week_label}\n")
+    out.append("> **New format!** Same DFS chaos, tighter recap, louder voice. This one’s late because the editor tried to stream ‘All-22’ from an airport lounge. We’ll be on time going forward — posting **every Tuesday at noon ET**.\n")
 
-    # 1) Weekly Results — intro → (mini visual none) → roast
+    # 1) Weekly Results  (intro → mini visual: Chalk&Leverage lines → roast)
     try:
         out.append("## Weekly Results")
         out.append(rb.weekly_results_blurb(scores, tone))
+        # Chalk & Leverage now lives here
+        chlv = rb.chalk_leverage_blurb(starters_idx, tone)
+        if chlv:
+            out.append("")
+            out.append(chlv)
         out.append("")
         out.append(f"*{rb.weekly_results_roast(tone)}*")
         out.append("")
     except Exception:
         out.append("_Weekly Results unavailable._")
 
-    # 2) VP Drama — intro → (mini visual none) → roast
+    # 2) VP Drama  (intro → roast)
     try:
         if payload.get("vp_drama"):
             out.append("## VP Drama")
@@ -91,7 +94,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_VP Drama unavailable._")
 
-    # 3) Headliners — intro → (mini visual none) → roast
+    # 3) Headliners  (intro → roast)
     try:
         if headliners:
             out.append("## Headliners")
@@ -102,7 +105,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Headliners unavailable._")
 
-    # 4) Values / Busts — intro → (mini visual none) → roast
+    # 4) Value vs. Busts  (intro → roast)
     try:
         out.append("## Value vs. Busts")
         out.append(rb.values_blurb(values, tone))
@@ -113,10 +116,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Value vs. Busts unavailable._")
 
-    # 5) Power Vibes — intro → mini visual (logos table) → roast
+    # 5) Power Vibes  (intro → mini visual: logos table → roast)
     try:
         out.append("## Power Vibes (Season-to-Date)")
-        out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.")
+        out.append("We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.")
         out.append("")
         out.append(rb.power_vibes_blurb(season_rank, tone))
         out.append("")
@@ -126,19 +129,14 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             for r in season_rank:
                 fid = str(r["id"]).zfill(4)
                 logo_html = _embed_logo_html(fid, r["team"], logos_dir)
-                rows.append([
-                    str(r["rank"]),
-                    logo_html,
-                    _fmt2(r["pts_sum"]),
-                    _fmt2(r["avg"]),
-                ])
+                rows.append([str(r["rank"]), logo_html, _fmt2(r["pts_sum"]), _fmt2(r["avg"])])
             out.append(_mini_table(headers, rows))
         out.append(f"*{rb.power_vibes_roast(tone)}*")
         out.append("")
     except Exception:
         out.append("_Power Vibes unavailable._")
 
-    # 6) Confidence — intro → (mini visual none) → roast
+    # 6) Confidence  (intro → roast)
     try:
         if conf3 or conf_no:
             out.append("## Confidence Pick’em")
@@ -149,7 +147,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Confidence section unavailable._")
 
-    # 7) Survivor — intro → (mini visual none) → roast
+    # 7) Survivor  (intro → roast)
     try:
         if surv or surv_no:
             out.append("## Survivor Pool")
@@ -160,17 +158,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Survivor section unavailable._")
 
-    # 8) Chalk vs Leverage — intro → (mini visual none) → roast
-    try:
-        out.append("## Chalk & Leverage")
-        out.append(rb.chalk_leverage_blurb(starters_idx, tone))
-        out.append("")
-        out.append(f"*{rb.chalk_leverage_roast(tone)}*")
-        out.append("")
-    except Exception:
-        out.append("_Chalk & Leverage unavailable._")
-
-    # 9) Around the League — short one-liners for 6–8 teams (rotates weekly)
+    # 8) Around the League (unique one-liners; rotates weekly)
     try:
         lines = rb.around_the_league_lines(f_map, scores, week=week_num, tone=tone, n=7)
         if lines:
@@ -187,10 +175,9 @@ def render_newsletter(payload: Dict[str, Any], output_dir: str, week: int) -> Di
     md_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.md"
     html_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.html"
 
-    # Always try to produce MD/HTML; never fail silently
     try:
         md_text = _mk_md(payload) or "# NPFFL Weekly Newsletter\n\n_No content._"
-    except Exception as e:
+    except Exception:
         err = f"**Render error**:\n\n```\n{traceback.format_exc()}\n```"
         md_text = f"# {payload.get('title','NPFFL Weekly Newsletter')}\n\n{err}\n"
 
