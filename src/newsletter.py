@@ -32,7 +32,6 @@ def _banners_cell(name: str, fid: str, banners_dir: str) -> str:
 def _mk_md(payload: Dict[str, Any]) -> str:
     title = payload.get("title", "NPFFL Weekly Newsletter")
     week_label = payload.get("week_label", "00")
-    tz = payload.get("timezone", "America/New_York")
 
     standings = payload.get("standings_rows") or []
     values = payload.get("top_values") or []
@@ -45,10 +44,9 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     season_rank = payload.get("season_rankings") or []
 
     conf3 = payload.get("confidence_top3") or []
-    conf_summary = payload.get("confidence_summary") or {}
+    team_prob = payload.get("team_prob") or {}  # expect this in payload from main when odds built
     conf_no = (payload.get("confidence_meta") or {}).get("no_picks", [])
     surv = payload.get("survivor_list") or []
-    surv_summary = payload.get("survivor_summary") or {}
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
 
     banners_dir = (payload.get("assets") or {}).get("banners_dir", "assets/banners")
@@ -58,16 +56,16 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     out: List[str] = []
     out.append(f"# {title} — Week {week_label}\n")
 
-    # Weekly Results first (long prose)
+    # Weekly Results (long prose)
     out.append("## Weekly Results")
     out.append(rb.weekly_results_blurb(scores) + "\n")
 
-    # VP Drama (expanded, no repetition)
+    # VP Drama (expanded)
     if payload.get("vp_drama"):
         out.append("## VP Drama")
         out.append(rb.vp_drama_blurb(payload["vp_drama"]) + "\n")
 
-    # Headliners (prose, varied verbs/objects)
+    # Headliners (team-centric prose)
     if headliners:
         out.append("## Headliners")
         out.append(rb.headliners_blurb(headliners) + "\n")
@@ -77,7 +75,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     out.append(rb.values_blurb(values))
     out.append(rb.busts_blurb(busts) + "\n")
 
-    # Power Vibes (season) + mini table
+    # Power Vibes (season table stays)
     out.append("## Power Vibes (Season-to-Date)")
     out.append(rb.power_vibes_blurb(season_rank) + "\n")
     if season_rank:
@@ -95,25 +93,17 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             ])
         out.append(_mini_table(headers, rows))
 
-    # Confidence (mini bullets)
+    # Confidence Pick’em — odds narrative ONLY (no tables/bullets)
     if conf3:
         out.append("## Confidence Pick’em")
-        out.append(rb.confidence_blurb(conf_summary, conf_no) + "\n")
-        for row in conf3:
-            team = row["team"]
-            top3 = ", ".join(f"{g['pick']}({g['rank']})" for g in row["top3"])
-            out.append(f"- **{team}** — {top3}")
-        out.append("")
+        out.append(rb.confidence_story(conf3, team_prob, conf_no) + "\n")
 
-    # Survivor (mini table)
-    if surv:
+    # Survivor Pool — odds narrative ONLY (no table)
+    if surv or surv_no:
         out.append("## Survivor Pool")
-        out.append(rb.survivor_blurb(surv_summary, surv_no) + "\n")
-        s_hdr = ["Team", "Pick"]
-        s_rows = [[r.get("team",""), r.get("pick","—") or "—"] for r in surv]
-        out.append(_mini_table(s_hdr, s_rows))
+        out.append(rb.survivor_story(surv, team_prob, surv_no) + "\n")
 
-    # Rotating segments (tight one-liners)
+    # Rotating segments
     fw = rb.fraud_watch_blurb(eff)
     if fw: out.append(fw + "\n")
     jail = rb.fantasy_jail_blurb(starters_idx, f_map)
