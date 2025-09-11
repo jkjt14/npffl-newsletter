@@ -1,5 +1,5 @@
 from __future__ import annotations
-import base64, mimetypes, html
+import base64, mimetypes, html, traceback
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -26,7 +26,6 @@ def _mini_table(headers: List[str], rows: List[List[str]]) -> str:
     return "\n".join(lines)
 
 def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
-    """Return an <img> tag with base64 data for 0002.(png|jpg) if found; else alt text."""
     p_png = Path(dirpath) / f"{fid}.png"
     p_jpg = Path(dirpath) / f"{fid}.jpg"
     p = p_png if p_png.exists() else (p_jpg if p_jpg.exists() else None)
@@ -36,7 +35,6 @@ def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
     mime = mime or ("image/png" if p.suffix.lower()==".png" else "image/jpeg")
     try:
         b64 = base64.b64encode(p.read_bytes()).decode("ascii")
-        # Slightly taller than text for table readability
         return f'<img src="data:{mime};base64,{b64}" alt="{html.escape(alt_text)}" style="height:26px;vertical-align:middle;border-radius:4px;" />'
     except Exception:
         return alt_text
@@ -44,6 +42,8 @@ def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
 def _mk_md(payload: Dict[str, Any]) -> str:
     title = payload.get("title", "NPFFL Weekly Newsletter")
     week_label = payload.get("week_label", "00")
+    week_num = int(str(week_label).lstrip("0") or "0") or payload.get("week", 0)
+    tone_name = (payload.get("tone") or payload.get("config", {}).get("tone") or "spicy")
 
     # Data
     values = payload.get("top_values") or []
@@ -61,77 +61,145 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     surv = payload.get("survivor_list") or []
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
 
-    # Franchise logos folder (your screenshot shows assets/franchises/0002.png)
     logos_dir = (payload.get("assets") or {}).get("banners_dir") or "assets/franchises"
 
+    # Roastbook with tone
     from . import roastbook as rb
+    tone = rb.Tone(tone_name)
 
     out: List[str] = []
     out.append(f"# {title} — Week {week_label}\n")
 
-    # 1) Weekly Results
-    out.append("## Weekly Results")
-    out.append(rb.weekly_results_blurb(scores) + "\n")
+    # 1) Weekly Results — intro → (mini visual none) → roast
+    try:
+        out.append("## Weekly Results")
+        out.append(rb.weekly_results_blurb(scores, tone))
+        out.append("")
+        out.append(f"*{rb.weekly_results_roast(tone)}*")
+        out.append("")
+    except Exception:
+        out.append("_Weekly Results unavailable._")
 
-    # 2) VP Drama
-    if payload.get("vp_drama"):
-        out.append("## VP Drama")
-        out.append(rb.vp_drama_blurb(payload["vp_drama"]) + "\n")
+    # 2) VP Drama — intro → (mini visual none) → roast
+    try:
+        if payload.get("vp_drama"):
+            out.append("## VP Drama")
+            out.append(rb.vp_drama_blurb(payload["vp_drama"], tone))
+            out.append("")
+            out.append(f"*{rb.vp_drama_roast(tone)}*")
+            out.append("")
+    except Exception:
+        out.append("_VP Drama unavailable._")
 
-    # 3) Headliners (team-centric)
-    if headliners:
-        out.append("## Headliners")
-        out.append(rb.headliners_blurb(headliners) + "\n")
+    # 3) Headliners — intro → (mini visual none) → roast
+    try:
+        if headliners:
+            out.append("## Headliners")
+            out.append(rb.headliners_blurb(headliners, tone))
+            out.append("")
+            out.append(f"*{rb.headliners_roast(tone)}*")
+            out.append("")
+    except Exception:
+        out.append("_Headliners unavailable._")
 
-    # 4) Values / Busts (team story)
-    out.append("## Value vs. Busts")
-    out.append(rb.values_blurb(values))
-    out.append(rb.busts_blurb(busts) + "\n")
+    # 4) Values / Busts — intro → (mini visual none) → roast
+    try:
+        out.append("## Value vs. Busts")
+        out.append(rb.values_blurb(values, tone))
+        out.append(rb.busts_blurb(busts, tone))
+        out.append("")
+        out.append(f"*{rb.values_roast(tone)} {rb.busts_roast(tone)}*")
+        out.append("")
+    except Exception:
+        out.append("_Value vs. Busts unavailable._")
 
-    # 5) Power Vibes (Season) — slim table + short explainer + EMBEDDED LOGOS
-    out.append("## Power Vibes (Season-to-Date)")
-    out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.\n")
-    out.append(rb.power_vibes_blurb(season_rank) + "\n")
-    if season_rank:
-        headers = ["#", "Team", "Pts (YTD)", "Avg"]
-        rows = []
-        for r in season_rank:
-            fid = str(r["id"]).zfill(4)
-            logo_html = _embed_logo_html(fid, r["team"], logos_dir)
-            rows.append([
-                str(r["rank"]),
-                logo_html,  # embed image directly so it renders in the artifact
-                _fmt2(r["pts_sum"]),
-                _fmt2(r["avg"]),
-            ])
-        out.append(_mini_table(headers, rows))
+    # 5) Power Vibes — intro → mini visual (logos table) → roast
+    try:
+        out.append("## Power Vibes (Season-to-Date)")
+        out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.")
+        out.append("")
+        out.append(rb.power_vibes_blurb(season_rank, tone))
+        out.append("")
+        if season_rank:
+            headers = ["#", "Team", "Pts (YTD)", "Avg"]
+            rows = []
+            for r in season_rank:
+                fid = str(r["id"]).zfill(4)
+                logo_html = _embed_logo_html(fid, r["team"], logos_dir)
+                rows.append([
+                    str(r["rank"]),
+                    logo_html,
+                    _fmt2(r["pts_sum"]),
+                    _fmt2(r["avg"]),
+                ])
+            out.append(_mini_table(headers, rows))
+        out.append(f"*{rb.power_vibes_roast(tone)}*")
+        out.append("")
+    except Exception:
+        out.append("_Power Vibes unavailable._")
 
-    # 6) Confidence (odds narrative; no lists)
-    if conf3 or conf_no:
-        out.append("## Confidence Pick’em")
-        out.append(rb.confidence_story(conf3, team_prob, conf_no) + "\n")
+    # 6) Confidence — intro → (mini visual none) → roast
+    try:
+        if conf3 or conf_no:
+            out.append("## Confidence Pick’em")
+            out.append(rb.confidence_story(conf3, team_prob, conf_no, tone))
+            out.append("")
+            out.append(f"*{rb.confidence_roast(tone)}*")
+            out.append("")
+    except Exception:
+        out.append("_Confidence section unavailable._")
 
-    # 7) Survivor (odds narrative; no table)
-    if surv or surv_no:
-        out.append("## Survivor Pool")
-        out.append(rb.survivor_story(surv, team_prob, surv_no) + "\n")
+    # 7) Survivor — intro → (mini visual none) → roast
+    try:
+        if surv or surv_no:
+            out.append("## Survivor Pool")
+            out.append(rb.survivor_story(surv, team_prob, surv_no, tone))
+            out.append("")
+            out.append(f"*{rb.survivor_roast(tone)}*")
+            out.append("")
+    except Exception:
+        out.append("_Survivor section unavailable._")
 
-    # 8) One-liners
-    fw = rb.fraud_watch_blurb(eff)
-    if fw: out.append(fw + "\n")
-    jail = rb.fantasy_jail_blurb(starters_idx, f_map)
-    if jail: out.append(jail + "\n")
-    # Standings intentionally removed.
+    # 8) Chalk vs Leverage — intro → (mini visual none) → roast
+    try:
+        out.append("## Chalk & Leverage")
+        out.append(rb.chalk_leverage_blurb(starters_idx, tone))
+        out.append("")
+        out.append(f"*{rb.chalk_leverage_roast(tone)}*")
+        out.append("")
+    except Exception:
+        out.append("_Chalk & Leverage unavailable._")
+
+    # 9) Around the League — short one-liners for 6–8 teams (rotates weekly)
+    try:
+        lines = rb.around_the_league_lines(f_map, scores, week=week_num, tone=tone, n=7)
+        if lines:
+            out.append("## Around the League")
+            out.extend([f"- {ln}" for ln in lines])
+            out.append("")
+    except Exception:
+        out.append("_Around the League unavailable._")
 
     return "\n".join(out)
 
 def render_newsletter(payload: Dict[str, Any], output_dir: str, week: int) -> Dict[str, str]:
-    md_text = _mk_md(payload) or "# NPFFL Weekly Newsletter\n\n_No content._"
+    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    md_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.md"
+    html_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.html"
+
+    # Always try to produce MD/HTML; never fail silently
+    try:
+        md_text = _mk_md(payload) or "# NPFFL Weekly Newsletter\n\n_No content._"
+    except Exception as e:
+        err = f"**Render error**:\n\n```\n{traceback.format_exc()}\n```"
+        md_text = f"# {payload.get('title','NPFFL Weekly Newsletter')}\n\n{err}\n"
+
     try:
         import markdown as _md
         html_body = _md.markdown(md_text, extensions=["tables"])
     except Exception:
         html_body = "<p>" + md_text.replace("\n", "<br/>") + "</p>"
+
     html_doc = f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><title>{html.escape(payload.get('title','NPFFL Weekly Newsletter'))} — Week {html.escape(payload.get('week_label','00'))}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -156,9 +224,7 @@ a{{color:var(--accent);text-decoration:none}}a:hover{{text-decoration:underline}
 <main>{html_body}</main>
 <div class="footer">Generated automatically — DFS blog vibe</div>
 </div></body></html>"""
-    out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
-    md_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.md"
-    html_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.html"
+
     md_path.write_text(md_text, encoding="utf-8")
     html_path.write_text(html_doc, encoding="utf-8")
     print(f"[newsletter] Wrote markdown: {md_path}")
