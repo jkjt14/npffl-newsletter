@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import glob
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -10,7 +12,7 @@ import yaml
 
 from .mfl_client import MFLClient
 from .fetch_week import fetch_week_data           # returns a dict of week data
-from .load_salary import load_salary_file         # returns a pandas DataFrame (or empty)
+from .load_salary import load_salary_file         # expects a path or glob string; returns a pandas DataFrame
 from .value_engine import compute_values          # returns dict: top_values, top_busts, team_efficiency, starters_with_salary
 from .newsletter import render_newsletter
 
@@ -64,7 +66,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
     # Shape A: week_data["standings"] already normalized
     st = week_data.get("standings")
     if isinstance(st, list) and st and all(isinstance(r, dict) for r in st):
-        # Try to coerce keys
         for r in st:
             fid = str(r.get("id") or r.get("franchise_id") or r.get("fid") or "").zfill(4)
             rows.append({
@@ -89,7 +90,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
     if not rows:
         pf_map: Dict[str, float] = {}
         wr = week_data.get("weekly_results") or {}
-        # tolerate shapes: {"matchups": [...] } or already flattened
         matchups = wr.get("matchups") if isinstance(wr, dict) else wr
         matchups = matchups or []
         for m in matchups:
@@ -97,7 +97,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 side = m.get(side_key)
                 if not side:
                     continue
-                # side may be list or single dict
                 side_list = side if isinstance(side, list) else [side]
                 for s in side_list:
                     fid = str(s.get("id") or s.get("franchise_id") or "").zfill(4)
@@ -112,7 +111,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 "vp": 0.0,
             })
 
-    # Stable order by PF desc, then name
     rows.sort(key=lambda r: (-_safe_float(r["pf"]), r["name"]))
     return rows
 
@@ -123,8 +121,7 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
 
 def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Produce: { franchise_id: [ {player_id, player, pos, team, pts}, ... ] }
-    Tolerates multiple shapes from fetch_week payloads.
+    { franchise_id: [ {player_id, player, pos, team, pts}, ... ] }
     """
     result: Dict[str, List[Dict[str, Any]]] = {}
     wr = week_data.get("weekly_results") or {}
@@ -137,7 +134,6 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
         result.setdefault(fid, []).append(row)
 
     for m in matchups:
-        # try typical MFL shapes
         for side_key in ("home", "away", "franchise", "franchises"):
             side = m.get(side_key)
             if not side:
@@ -145,32 +141,20 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
             side_list = side if isinstance(side, list) else [side]
             for s in side_list:
                 fid = str(s.get("id") or s.get("franchise_id") or "").zfill(4)
-
                 starters = s.get("starters") or s.get("players") or []
-                # starters sometimes a list of dicts {id,name,pos,nfl_team,points}
-                # or {"player":[{...}, ...]}
                 if isinstance(starters, dict) and "player" in starters:
                     starters = starters["player"]
-
                 if isinstance(starters, list):
                     for p in starters:
-                        # tolerate both snake/camel, string/float
-                        _pid = p.get("id") or p.get("player_id") or p.get("pid")
-                        _name = p.get("name") or p.get("player") or p.get("Player")
-                        _pos = p.get("position") or p.get("pos")
-                        _team = p.get("nfl_team") or p.get("team") or p.get("Team")
-                        _pts = p.get("points") or p.get("score") or p.get("Pts")
-
                         row = {
-                            "player_id": str(_pid or "").strip(),
-                            "player": str(_name or "").strip(),
-                            "pos": str(_pos or "").strip(),
-                            "team": (str(_team or "").strip() or None),
-                            "pts": _safe_float(_pts, 0.0),
+                            "player_id": str(p.get("id") or p.get("player_id") or p.get("pid") or "").strip(),
+                            "player": str(p.get("name") or p.get("player") or p.get("Player") or "").strip(),
+                            "pos": str(p.get("position") or p.get("pos") or "").strip(),
+                            "team": (str(p.get("nfl_team") or p.get("team") or p.get("Team") or "").strip() or None),
+                            "pts": _safe_float(p.get("points") or p.get("score") or p.get("Pts"), 0.0),
                         }
                         _add(fid, row)
                 else:
-                    # if no starters shape, at least put QB/placeholder so value engine has something
                     score = _safe_float(s.get("score") or s.get("points") or 0.0)
                     _add(fid, {"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
 
@@ -182,13 +166,84 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
 # ----------------------
 
 def _int_or_none(s: str | None) -> int | None:
-    """Convert '', '  ', None -> None; otherwise int(s)."""
     if s is None:
         return None
     s = str(s).strip()
     if s == "":
         return None
     return int(s)
+
+
+def _cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
+    """
+    Get nested config by dot path (e.g., 'inputs.salary_glob').
+    """
+    cur = cfg
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    return cur
+
+
+def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
+    """
+    Determine the salary file path or glob. Must match at least one file.
+    Resolution order:
+      1) config top-level: salaries_path / salaries_file / salary_file
+      2) config nested: inputs.salary_glob (your config.yaml uses this)
+      3) env: SALARY_GLOB
+      4) common defaults: data/salaries/*.xlsx, salaries/*.xlsx
+    """
+    candidates: List[str] = []
+
+    # 1) top-level keys
+    for k in ("salaries_path", "salaries_file", "salary_file"):
+        v = cfg.get(k)
+        if v:
+            candidates.append(str(v))
+
+    # 2) nested: inputs.salary_glob
+    v = _cfg_get(cfg, "inputs.salary_glob")
+    if v:
+        candidates.append(str(v))
+
+    # 3) env
+    env_glob = os.environ.get("SALARY_GLOB")
+    if env_glob:
+        candidates.append(env_glob)
+
+    # 4) sensible defaults
+    candidates.extend([
+        "data/salaries/*.xlsx",
+        "salaries/*.xlsx",
+    ])
+
+    tried: List[str] = []
+    for pat in candidates:
+        pat = str(pat).strip()
+        if not pat:
+            continue
+        tried.append(pat)
+        matches = sorted(glob.glob(pat))
+        if matches:
+            return pat
+
+    msg = [
+        "[salary] No salary files found.",
+        "Looked for a file or glob in the following locations:",
+        *[f"  - {p}" for p in tried] if tried else ["  - (no patterns to try)"],
+        "",
+        "Your config includes 'inputs.salary_glob' support (e.g., inputs.salary_glob: data/salaries/*.xlsx).",
+        "How to fix:",
+        "  • Add one of these to your config.yaml: salaries_path / salaries_file / salary_file,",
+        "    or set inputs.salary_glob: <glob>,",
+        "    or set env SALARY_GLOB with a valid glob.",
+        "  • Ensure the matching .xlsx file(s) are present in the repo or accessible to the runner.",
+    ]
+    print("\n".join(msg), file=sys.stderr)
+    sys.exit(2)
+
 
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="NPFFL Weekly Roast generator")
@@ -208,7 +263,9 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     tz = cfg.get("timezone") or cfg.get("tz") or "America/New_York"
     week = args.week if args.week is not None else int(cfg.get("week") or 1)
 
-    out_dir = Path(args.out_dir)
+    # Prefer config output dir if provided; otherwise use CLI/env default
+    cfg_out_dir = _cfg_get(cfg, "outputs.dir")
+    out_dir = Path(cfg_out_dir or args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Instantiate client (tolerate different constructor signatures)
@@ -232,15 +289,15 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         cfg.get("franchise_names"),
     )
 
-    # Standings table
+    # Standings
     standings_rows = _build_standings_rows(week_data, f_names)
 
-    # Starters by franchise for the value engine
+    # Starters by franchise
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
-    # Load salaries (path from config if provided)
-    salaries_path = cfg.get("salaries_path") or cfg.get("salaries_file") or cfg.get("salary_file")
-    salaries_df = load_salary_file(salaries_path) if salaries_path else load_salary_file(None)
+    # ---- REQUIRED salaries: resolve, validate, and load ----
+    salaries_pattern = _resolve_required_salaries_path(cfg)  # checks inputs.salary_glob
+    salaries_df = load_salary_file(salaries_pattern)
 
     # Compute value metrics, try multiple signatures defensively
     values_out: Dict[str, Any] = {}
@@ -250,7 +307,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         try:
             values_out = compute_values(starters_by_franchise, salaries_df)
         except TypeError:
-            values_out = compute_values(starters_by_franchise)  # last resort
+            values_out = compute_values(starters_by_franchise)
 
     top_values = values_out.get("top_values", [])
     top_busts = values_out.get("top_busts", [])
@@ -260,11 +317,11 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     pool_nfl = week_data.get("pool_nfl") or {}
     survivor_pool = week_data.get("survivor_pool") or {}
 
-    # Lines (optional – from odds API integration if present in week_data)
+    # Lines (optional)
     lines = week_data.get("lines") or week_data.get("odds") or []
 
     payload: Dict[str, Any] = {
-        "title": cfg.get("title") or "NPFFL Weekly Roast",
+        "title": _cfg_get(cfg, "newsletter.title") or cfg.get("title") or "NPFFL Weekly Roast",
         "week_label": _week_label(week),
         "timezone": tz,
         "year": year,
@@ -277,11 +334,10 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "pool_nfl": pool_nfl,
         "survivor_pool": survivor_pool,
         "lines": lines,
-        # Leave roasts empty unless you have a generator
         "roasts": [],
     }
 
-    # Debug dump to help with template issues (non-fatal)
+    # Debug dump
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -298,13 +354,12 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         make_html=bool(args.make_html),
     )
 
-    # Ensure CI has something to upload even in degenerate cases
+    # Ensure CI has something to upload
     if isinstance(outputs, (list, tuple)) and outputs:
         for p in outputs:
             print(f"Wrote: {p}")
         return tuple(Path(p) for p in outputs)  # type: ignore[return-value]
     else:
-        # write a minimal stub file
         stub_md = out_dir / f"week_{_week_label(week)}.md"
         stub_md.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
         print(f"Wrote: {stub_md}")
