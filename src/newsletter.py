@@ -3,6 +3,7 @@ import html
 from pathlib import Path
 from typing import Any, Dict, List
 
+# Markdown rendering (with graceful fallback)
 try:
     import markdown as _md
     def _render_markdown(md_text: str) -> str:
@@ -33,7 +34,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     title = payload.get("title", "NPFFL Weekly Newsletter")
     week_label = payload.get("week_label", "00")
 
-    standings = payload.get("standings_rows") or []
+    # Data
     values = payload.get("top_values") or []
     busts = payload.get("top_busts") or []
     eff = payload.get("team_efficiency") or []
@@ -44,11 +45,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     season_rank = payload.get("season_rankings") or []
 
     conf3 = payload.get("confidence_top3") or []
-    team_prob = payload.get("team_prob") or {}  # expect this in payload from main when odds built
+    team_prob = payload.get("team_prob") or {}
     conf_no = (payload.get("confidence_meta") or {}).get("no_picks", [])
     surv = payload.get("survivor_list") or []
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
-
     banners_dir = (payload.get("assets") or {}).get("banners_dir", "assets/banners")
 
     from . import roastbook as rb
@@ -56,26 +56,26 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     out: List[str] = []
     out.append(f"# {title} — Week {week_label}\n")
 
-    # Weekly Results (long prose)
+    # 1) Weekly Results (long, team-first)
     out.append("## Weekly Results")
     out.append(rb.weekly_results_blurb(scores) + "\n")
 
-    # VP Drama (expanded)
+    # 2) VP Drama (top-5 vs 6th + bubble)
     if payload.get("vp_drama"):
         out.append("## VP Drama")
         out.append(rb.vp_drama_blurb(payload["vp_drama"]) + "\n")
 
-    # Headliners (team-centric prose)
+    # 3) Headliners (team-centric write-up)
     if headliners:
         out.append("## Headliners")
         out.append(rb.headliners_blurb(headliners) + "\n")
 
-    # Values & Busts (prose only)
+    # 4) Values / Busts (prose only)
     out.append("## Value vs. Busts")
     out.append(rb.values_blurb(values))
     out.append(rb.busts_blurb(busts) + "\n")
 
-    # Power Vibes (season table stays)
+    # 5) Power Vibes (Season) — single mini table allowed
     out.append("## Power Vibes (Season-to-Date)")
     out.append(rb.power_vibes_blurb(season_rank) + "\n")
     if season_rank:
@@ -93,34 +93,22 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             ])
         out.append(_mini_table(headers, rows))
 
-    # Confidence Pick’em — odds narrative ONLY (no tables/bullets)
-    if conf3:
+    # 6) Confidence (odds-driven narrative; no bullets/tables)
+    if conf3 or conf_no:
         out.append("## Confidence Pick’em")
         out.append(rb.confidence_story(conf3, team_prob, conf_no) + "\n")
 
-    # Survivor Pool — odds narrative ONLY (no table)
+    # 7) Survivor (odds-driven narrative; no table)
     if surv or surv_no:
         out.append("## Survivor Pool")
         out.append(rb.survivor_story(surv, team_prob, surv_no) + "\n")
 
-    # Rotating segments
+    # 8) Rotating one-liners
     fw = rb.fraud_watch_blurb(eff)
     if fw: out.append(fw + "\n")
     jail = rb.fantasy_jail_blurb(starters_idx, f_map)
     if jail: out.append(jail + "\n")
-    dd = rb.dumpster_division_blurb(standings)
-    if dd: out.append(dd + "\n")
-
-    # Standings (tiny table at end)
-    if standings:
-        out.append("## Standings (Week-to-date)")
-        hdr = ["Team", "PF", "VP"]
-        body = []
-        for r in standings:
-            fid = str(r.get("id") or "").zfill(4)
-            name = r.get("name","Team")
-            body.append([_banners_cell(name, fid, banners_dir), _fmt2(r.get("pf")), _fmt2(r.get("vp",0))])
-        out.append(_mini_table(hdr, body))
+    # Standings section intentionally removed per user preference.
 
     return "\n".join(out)
 
