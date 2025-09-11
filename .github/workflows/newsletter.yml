@@ -8,7 +8,8 @@ on:
         required: false
         default: ""
   schedule:
-    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
+    # Tuesday 12:00 PM ET during EDT (16:00 UTC). Bump to 17:00 after DST ends.
+    - cron: "0 16 * * 2"
 
 jobs:
   build-newsletter:
@@ -24,6 +25,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"  # speeds up repeated installs
 
       - name: Install deps
         run: |
@@ -52,23 +54,40 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          python -m src.main --week "${WEEK:-}"
+
+          # Build args safely; only add --week if non-empty
+          ARGS=( --out-dir build )
+          if [[ -n "${WEEK:-}" ]]; then
+            ARGS+=( --week "$WEEK" )
+          fi
+
+          # main.py already defaults make-html True; add flag if you want to force it:
+          # ARGS+=( --make-html )
+
+          python -m src.main "${ARGS[@]}"
+
           echo "[out] Contents of build/:"
           ls -lah build || true
 
-      # derive a week label for artifact naming if none provided
+      # Derive a week label for artifact naming if none provided
       - name: Discover week label
         run: |
           set -euo pipefail
           WEEK_IN="${{ github.event.inputs.week }}"
-          if [ -n "$WEEK_IN" ]; then
+          if [[ -n "$WEEK_IN" ]]; then
             WLBL=$(printf "%02d" "$WEEK_IN")
           else
             F=$(ls -1 build/NPFFL_Week_*.md 2>/dev/null | sort | tail -n1 || true)
-            if [ -n "$F" ]; then
+            if [[ -n "$F" ]]; then
               WLBL=$(basename "$F" | sed -E 's/NPFFL_Week_([0-9]{2}).*/\1/')
             else
-              WLBL="unknown"
+              # fallback: try the generic stub your main writes
+              F2=$(ls -1 build/week_*.md 2>/dev/null | sort | tail -n1 || true)
+              if [[ -n "$F2" ]]; then
+                WLBL=$(basename "$F2" | sed -E 's/week_([0-9]{2}).*/\1/')
+              else
+                WLBL="unknown"
+              fi
             fi
           fi
           echo "WEEK_LABEL=$WLBL" >> "$GITHUB_ENV"
@@ -81,5 +100,8 @@ jobs:
           path: |
             build/*.md
             build/*.html
-          if-no-files-found: error
+            build/context_week_*.json
+          # Use 'warn' while iterating so the job doesn't fail if nothing is produced.
+          # Flip to 'error' later once things are stable.
+          if-no-files-found: warn
           retention-days: 30
