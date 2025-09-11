@@ -1,8 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
-import math
 import statistics
+import random
 
+# ---------- helpers ----------
 
 def _fmt2(x: float | int | None, default="0.00") -> str:
     if x is None:
@@ -13,122 +14,146 @@ def _fmt2(x: float | int | None, default="0.00") -> str:
     except Exception:
         return default
 
+def _pick(seq: List[str]) -> str:
+    return random.choice(seq) if seq else ""
 
-# ---------- Core Roasts (DFS tone) ----------
+# ---------- core roasts (DFS tone, no pp$ shown) ----------
 
-def opener_blurb(scores_info: Dict[str, Any]) -> str:
-    rows = scores_info.get("rows") or []
+def opener(scores: Dict[str, Any]) -> str:
+    rows = scores.get("rows") or []
     if not rows:
         return ""
-    top = rows[0]
-    bottom = rows[-1]
-    mid_msg = ""
-    if len(rows) >= 4:
-        # measure congestion around the median
-        scores = [s for _, s in rows]
-        med = statistics.median(scores)
-        span = max(scores) - min(scores)
-        tight = span <= 20
-        if tight:
-            mid_msg = " The middle was a mosh pit—every lineup point mattered."
+    top = rows[0]; bot = rows[-1]
+    line = [
+        f"**{top[0]}** lit the slate with **{top[1]:.2f}**.",
+        f"**{bot[0]}**? Paid the cover charge and watched from the parking lot (**{bot[1]:.2f}**).",
+    ]
+    # crowding
+    if len(rows) > 6:
+        sc = [s for _, s in rows]
+        med = statistics.median(sc); span = max(sc) - min(sc)
+        if span <= 20:
+            line.append("The middle was a mosh pit—one bench swap changes everything.")
         else:
-            mid_msg = f" The middle was chaos around {med:.2f}."
-    return (f"**{top[0]}** blasted off with **{top[1]:.2f}**, while **{bottom[0]}** "
-            f"brought a sleep mask and hit **{bottom[1]:.2f}**.{mid_msg}")
+            line.append(f"Chaos swirled around **{med:.2f}**—stack or be stacked.")
+    return " ".join(line)
 
-
-def vp_drama_blurb(vp_drama: Dict[str, Any]) -> str:
-    if not vp_drama:
+def weekly_wrap(scores: Dict[str, Any]) -> str:
+    rows = scores.get("rows") or []
+    if not rows:
         return ""
-    villain = vp_drama.get("villain")
-    bubble = vp_drama.get("bubble")
-    gap = vp_drama.get("gap_pf")
-    return (f"**League Villain:** {villain} grabbed the last chair in the 2.5 VP lounge "
-            f"and locked the door. **{bubble}** missed by **{_fmt2(gap)}** PF. Brutal.")
+    names = [r[0] for r in rows]
+    mid = len(rows)//2
+    midpack = ", ".join(names[max(0, mid-2):mid+1])
+    leaders = ", ".join(names[:3])
+    laggers = ", ".join(names[-3:])
+    return (f"Leaders: **{leaders}**. Middle pack clinging together: {midpack}. "
+            f"Down bad: {laggers}. Tight slate, tighter nerves.")
 
-
-def headliners_blurb(headliners: List[Dict[str, Any]]) -> str:
-    if not headliners:
+def vp_drama_blurb(vp: Dict[str, Any]) -> str:
+    if not vp:
         return ""
+    return (f"**League Villain:** {vp['villain']} slammed the door on the 2.5 VP lounge; "
+            f"{vp['bubble']} missed by **{_fmt2(vp['gap_pf'])}** PF. Bring tissues.")
+
+def headliners_blurb(rows: List[Dict[str, Any]]) -> str:
+    if not rows:
+        return ""
+    verbs = ["torch", "cook", "punish", "detonate", "style on", "baptize", "smoke"]
     bits = []
-    for h in headliners[:5]:
-        nm = h.get("player") or "Unknown"
-        pts = _fmt2(h.get("pts"))
+    for h in rows[:6]:
+        v = _pick(verbs)
         mgrs = ", ".join(h.get("managers", []))
-        bits.append(f"{nm} dropped **{pts}** ({mgrs})")
-    return " ; ".join(bits) + "."
+        who = h.get("player") or "Somebody"
+        pts = _fmt2(h.get("pts"))
+        pos = h.get("pos") or ""
+        team = h.get("team") or ""
+        # spice up with position/team in parens when present
+        tail = f" ({pos} {team})" if (pos or team) else ""
+        bits.append(f"{who}{tail} {v}ed the slate for **{pts}** ({mgrs})")
+    return " • ".join(bits) + "."
 
+def values_blurb(values: List[Dict[str, Any]]) -> str:
+    if not values:
+        return "No heists this week—chalk lineups everywhere."
+    top = values[:5]
+    names = ", ".join(v.get("player","Unknown") for v in top)
+    return (f"**Biggest Steals:** {names}. Budget ballers turned into headline numbers. "
+            f"If you missed those tags, that’s an expensive nap.")
 
-def confidence_blurb(conf_rows: List[Dict[str, Any]], boring_pick: str | None = None, bold_pick: str | None = None) -> str:
-    if not conf_rows:
-        return ""
-    pieces = []
-    if bold_pick:
-        pieces.append(f"**Boldest Pick:** {bold_pick}")
-    if boring_pick:
-        pieces.append(f"**Boring Pick:** {boring_pick} (safety blanket energy)")
-    if not pieces:
-        return "Confidence game is on—top stacks loaded up high."
-    return " — ".join(pieces) + "."
+def busts_blurb(busts: List[Dict[str, Any]]) -> str:
+    if not busts:
+        return "No overpriced misfires… for once. Don’t get comfy."
+    top = busts[:5]
+    names = ", ".join(v.get("player","Unknown") for v in top)
+    return (f"**Overpriced Misfires:** {names}. Premium spend, bargain-bin returns. "
+            f"That sound you hear is salary lighting itself on fire.")
 
-
-def survivor_blurb(survivor_rows: List[Dict[str, Any]], lifeline: str | None = None, consensus: str | None = None, no_picks: List[str] | None = None) -> str:
-    if not survivor_rows and not (lifeline or consensus or no_picks):
-        return ""
-    pieces = []
-    if lifeline:
-        pieces.append(f"**Boldest Lifeline:** {lifeline}")
-    if consensus:
-        pieces.append(f"**Boring Consensus:** {consensus}")
-    if no_picks:
-        pieces.append(f"**No-Pick Parade:** {', '.join(no_picks)}")
-    return " — ".join(pieces) + "."
-
-
-def dumpster_division_blurb(standings_rows: List[Dict[str, Any]]) -> str:
-    if not standings_rows:
-        return ""
-    n = len(standings_rows)
-    k = max(1, n // 3)  # bottom third
-    cellar = standings_rows[-k:]
-    names = ", ".join(r["name"] for r in cellar)
-    return f"**Dumpster Division:** {names}. Someone call the custodial crew."
-
-
-def fraud_watch_blurb(team_efficiency: List[Dict[str, Any]]) -> str:
-    """Find a team with decent points but weak Pts/$1K (ppk)."""
-    if not team_efficiency:
-        return ""
-    # compute ppk; pick top points among bottom quartile ppk
+def power_ranks_blurb(eff: List[Dict[str, Any]]) -> str:
+    if not eff:
+        return "Efficiency board refused to cooperate; everyone vibe-checked equally mid."
+    # rank by internal ppk (not shown)
     rows = []
-    for r in team_efficiency:
+    for r in eff:
+        pts = float(r.get("total_pts") or 0.0)
+        sal = float(r.get("total_sal") or 0.0)
+        ppk = (pts / (sal/1000)) if sal > 0 else 0.0
+        rows.append((ppk, r.get("name","")))
+    rows.sort(reverse=True)
+    leaders = ", ".join(x[1] for x in rows[:5])
+    laggers = ", ".join(x[1] for x in rows[-3:])
+    return (f"**Power Vibes:** {leaders} ran cleaner builds than the room. "
+            f"Meanwhile {laggers} were busy donating rake.")
+
+def confidence_blurb(summary: Dict[str, Any], no_picks: List[str]) -> str:
+    parts = []
+    if summary.get("boldest_pick"):
+        parts.append(f"**Boldest Pick:** {summary['boldest_pick']} (Vegas hated it; they didn’t).")
+    if summary.get("boring_pick"):
+        parts.append(f"**Boring Pick:** {summary['boring_pick']} (everyone’s comfort blanket).")
+    if no_picks:
+        parts.append(f"**No-Pick Parade:** {', '.join(no_picks)} — did your internet go out?")
+    return " — ".join(parts) + ("." if parts else "")
+
+def survivor_blurb(summary: Dict[str, Any], no_picks: List[str]) -> str:
+    parts = []
+    if summary.get("boldest_lifeline"):
+        parts.append(f"**Boldest Lifeline:** {summary['boldest_lifeline']} (walking the tightrope).")
+    if summary.get("boring_consensus"):
+        parts.append(f"**Boring Consensus:** {summary['boring_consensus']} (training wheels).")
+    if no_picks:
+        parts.append(f"**No-Pick Parade:** {', '.join(no_picks)} — auto-fade of the week.")
+    return " — ".join(parts) + ("." if parts else "")
+
+def dumpster_division_blurb(standings: List[Dict[str, Any]]) -> str:
+    if not standings:
+        return ""
+    n = len(standings); k = max(1, n//3)
+    names = ", ".join(r["name"] for r in standings[-k:])
+    return f"**Dumpster Division:** {names}. Someone please call housekeeping."
+
+def fraud_watch_blurb(eff: List[Dict[str, Any]]) -> str:
+    if not eff:
+        return ""
+    # decent pts with low internal ppk
+    rows = []
+    for r in eff:
         pts = float(r.get("total_pts") or 0.0)
         sal = float(r.get("total_sal") or 0.0)
         ppk = (pts / (sal/1000)) if sal > 0 else 0.0
         rows.append({"name": r.get("name",""), "pts": pts, "ppk": ppk})
     if not rows:
         return ""
-    ppk_vals = sorted(x["ppk"] for x in rows)
-    if not ppk_vals:
-        return ""
-    q1 = ppk_vals[max(0, (len(ppk_vals)//4)-1)]
-    candidates = [x for x in rows if x["ppk"] <= q1]
-    if not candidates:
-        return ""
-    fraud = max(candidates, key=lambda x: x["pts"])
-    return (f"🔥 **Fraud Watch:** {fraud['name']} posted **{fraud['pts']:.2f}** but lit salary on fire. "
-            f"Efficiency: **{fraud['ppk']:.2f} pts/$1K**. Looks rich, spends dumb.")
+    rows.sort(key=lambda x: (x["ppk"], -x["pts"]))
+    fraud = rows[0]
+    return (f"🔥 **Fraud Watch:** {fraud['name']} put up **{_fmt2(fraud['pts'])}** with a money bonfire. "
+            "DFS accountant says: charged off as a loss.")
 
-
-def fantasy_jail_blurb(starters_index: Dict[str, List[Dict[str, Any]]] | None, f_map: Dict[str,str] | None) -> str:
-    """
-    If we have starters with 0.0 pts, put those managers in 'Fantasy Jail'.
-    If starters aren't provided in payload, return "" (safe no-op).
-    """
-    if not starters_index or not f_map:
+def fantasy_jail_blurb(starters: Dict[str, List[Dict[str, Any]]] | None, f_map: Dict[str,str] | None) -> str:
+    if not starters or not f_map:
         return ""
     offenders = []
-    for fid, rows in starters_index.items():
+    for fid, rows in starters.items():
         zeroes = [r for r in rows if float(r.get("pts") or 0.0) == 0.0 and (r.get("player_id") or "") != ""]
         if zeroes:
             offenders.append((f_map.get(fid, fid), len(zeroes)))
@@ -136,18 +161,4 @@ def fantasy_jail_blurb(starters_index: Dict[str, List[Dict[str, Any]]] | None, f
         return ""
     offenders.sort(key=lambda t: -t[1])
     name, cnt = offenders[0]
-    extra = ", ".join(f"{n}({c})" for n,c in offenders[1:3])
-    msg = f"🚔 **Fantasy Jail:** {name} started {cnt} goose-egg slot{'s' if cnt!=1 else ''}."
-    if extra:
-        msg += f" Parole lineup check for {extra}."
-    return msg
-
-
-def trophies_blurb(scores_info: Dict[str, Any]) -> Dict[str, str]:
-    rows = scores_info.get("rows") or []
-    if not rows:
-        return {}
-    return {
-        "banana": f"🏆 **Banana Peel:** {rows[0][0]} stacked the biggest numbers.",
-        "trombone": f"😬 **Walk of Shame:** {rows[-1][0]} tripped over the lowest score."
-    }
+    return f"🚔 **Fantasy Jail:** {name} started {cnt} goose-egg slot{'s' if cnt!=1 else ''}. Community service: lineup locks 101."
