@@ -11,9 +11,9 @@ from .load_salary import load_salary_file
 from .value_engine import compute_values
 from .newsletter import render_newsletter
 from .odds_client import fetch_week_moneylines, build_team_prob_index, TEAM_MAP
+from .history import load_history, save_history, update_history, build_season_rankings
 
-# ------------ utils (unchanged) ------------
-
+# ---------- utils ----------
 def _read_config(path: str | Path = "config.yaml") -> Dict[str, Any]:
     p = Path(path); 
     if not p.exists(): return {}
@@ -63,23 +63,27 @@ def _resolve_required_salaries_glob(cfg: Dict[str, Any]) -> str:
     print("Set inputs.salary_glob in config.yaml or SALARY_GLOB env.", file=sys.stderr)
     sys.exit(2)
 
-# ------------ derivations you already had (shortened to key bits) ------------
+# ---------- derivations ----------
+def _derive_weekly_scores(week_data: Dict[str, Any]) -> List[Tuple[str, float]]:
+    out: List[Tuple[str, float]] = []
+    wr = week_data.get("weekly_results") or {}
+    node = wr.get("weeklyResults") if isinstance(wr, dict) else {}
+    franchises = (node or {}).get("franchise") or []
+    if isinstance(franchises, dict): franchises = [franchises]
+    for fr in (franchises or []):
+        fid = str(fr.get("id") or "").zfill(4)
+        out.append((fid, _safe_float(fr.get("score"), 0.0)))
+    return out
 
 def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
     rows = week_data.get("standings_rows")
     if isinstance(rows, list) and rows: return rows
-    rows = []
-    wr = week_data.get("weekly_results") or {}
-    wrn = wr.get("weeklyResults") if isinstance(wr, dict) else {}
-    # root-level franchise scores
-    franchises = (wrn or {}).get("franchise") or []
-    if isinstance(franchises, dict): franchises = [franchises]
-    for fr in (franchises or []):
-        fid = str(fr.get("id") or "").zfill(4)
-        pf = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points"), 0.0)
-        rows.append({"id": fid, "name": f_map.get(fid, f"Team {fid}"), "pf": pf, "vp": 0.0})
-    rows.sort(key=lambda r: (-_safe_float(r["vp"]), -_safe_float(r["pf"]), r["name"]))
-    return rows
+    # fallback from weekly scores
+    out = []
+    for fid, pts in _derive_weekly_scores(week_data):
+        out.append({"id": fid, "name": f_map.get(fid, f"Team {fid}"), "pf": pts, "vp": 0.0})
+    out.sort(key=lambda r: (-_safe_float(r["vp"]), -_safe_float(r["pf"]), r["name"]))
+    return out
 
 def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     out: Dict[str, List[Dict[str, Any]]] = {}
@@ -90,6 +94,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
     if isinstance(franchises, dict): franchises = [franchises]
     for fr in franchises or []:
         fid = str(fr.get("id") or "").zfill(4)
+        # per-team player index
         f_pl = fr.get("players") or fr.get("player") or []
         if isinstance(f_pl, dict): f_pl = f_pl.get("player") or f_pl
         if isinstance(f_pl, dict): f_pl = [f_pl]
@@ -121,20 +126,6 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
         out.setdefault(fid, []).extend(rows)
     return out
 
-def _derive_weekly_scores(week_data: Dict[str, Any], f_map: Dict[str, str]) -> Dict[str, Any]:
-    out_rows: List[Tuple[str, float]] = []
-    wr = week_data.get("weekly_results") or {}
-    node = wr.get("weeklyResults") if isinstance(wr, dict) else {}
-    franchises = (node or {}).get("franchise") or []
-    if isinstance(franchises, dict): franchises = [franchises]
-    for fr in (franchises or []):
-        fid = str(fr.get("id") or "").zfill(4)
-        out_rows.append((f_map.get(fid, f"Team {fid}"), _safe_float(fr.get("score"), 0.0)))
-    if not out_rows: return {"rows": [], "avg": None}
-    scores = [s for _, s in out_rows]; avg = round(sum(scores)/len(scores), 2)
-    out_rows.sort(key=lambda t: -t[1])
-    return {"rows": out_rows, "avg": avg}
-
 def _derive_vp_drama(standings: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not standings: return {}
     rows = sorted(standings, key=lambda r: (-_safe_float(r.get("vp")), -_safe_float(r.get("pf"))))
@@ -143,7 +134,7 @@ def _derive_vp_drama(standings: List[Dict[str, Any]]) -> Dict[str, Any]:
     if not mids or not lows: return {}
     last_in = mids[-1]; first_out = lows[0]
     gap = round(_safe_float(last_in["pf"]) - _safe_float(first_out["pf"]), 2)
-    return {"villain": last_in["name"], "bubble": first_out["name"], "gap_pf": gap}
+    return {"villain": last_in["name"], "bubble": first_out["name"], "gap_pf": gap, "top5": rows[:5], "sixth": rows[5] if len(rows) > 5 else None}
 
 def _derive_headliners(starters_by_franchise: Dict[str, List[Dict[str, Any]]],
                        players_map: Dict[str, Dict[str, Any]],
@@ -167,13 +158,11 @@ def _derive_headliners(starters_by_franchise: Dict[str, List[Dict[str, Any]]],
     rows.sort(key=lambda x: -x["pts"])
     return rows[:top_n]
 
-# ------------ odds-based summaries ------------
-
+# ---------- odds summaries ----------
 def _mfl_code_to_odds(team_code: str) -> str:
     return TEAM_MAP.get(team_code.upper().strip(), team_code.upper().strip())
 
 def _confidence_summary(conf3: List[Dict[str, Any]], team_prob: Dict[str, float]) -> Dict[str, Any]:
-    # boring = most common highest-prob pick; boldest = rarest lowest-prob pick
     all_picks: List[str] = []
     scored: List[Tuple[str, float]] = []
     for row in conf3:
@@ -183,35 +172,30 @@ def _confidence_summary(conf3: List[Dict[str, Any]], team_prob: Dict[str, float]
             all_picks.append(t)
             prob = float(team_prob.get(t, 0.5))
             scored.append((t, prob))
-    boring = ""
+    boring = None
     if all_picks:
         from collections import Counter
         c = Counter(all_picks)
-        most_common = sorted(c.items(), key=lambda x: (-x[1], x[0]))[0][0]
-        boring = most_common
-    boldest = ""
+        boring = sorted(c.items(), key=lambda x: (-x[1], x[0]))[0][0]
+    boldest = None
     if scored:
         scored.sort(key=lambda x: x[1])  # lowest prob first
         boldest = scored[0][0]
-    return {"boring_pick": boring or None, "boldest_pick": boldest or None}
+    return {"boring_pick": boring, "boldest_pick": boldest}
 
 def _survivor_summary(surv: List[Dict[str, Any]], team_prob: Dict[str, float]) -> Dict[str, Any]:
-    if not surv:
-        return {}
+    if not surv: return {}
     picks = [ _mfl_code_to_odds(r.get("pick","")) for r in surv if r.get("pick") ]
-    if not picks:
-        return {"boring_consensus": None, "boldest_lifeline": None}
+    if not picks: return {"boring_consensus": None, "boldest_lifeline": None}
     from collections import Counter
     c = Counter(picks)
     boring = sorted(c.items(), key=lambda x: (-x[1], x[0]))[0][0]
-    # boldest = lowest probability among picks used
     boldest = sorted(picks, key=lambda t: team_prob.get(t, 0.5))[0]
     return {"boring_consensus": boring, "boldest_lifeline": boldest}
 
-# ------------ CLI + main ------------
-
+# ---------- CLI ----------
 def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description="NPFFL Weekly Roast generator")
+    ap = argparse.ArgumentParser(description="NPFFL Weekly Newsletter generator")
     ap.add_argument("--config", default=os.environ.get("NPFFL_CONFIG", "config.yaml"))
     ap.add_argument("--week", type=_int_or_none, default=None)
     ap.add_argument("--out-dir", default=os.environ.get("NPFFL_OUTDIR", "build"))
@@ -227,8 +211,9 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     week = args.week if args.week is not None else int(cfg.get("week") or 1)
 
     out_dir = Path(_cfg_get(cfg, "outputs.dir") or args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    history_dir = str(Path(out_dir) / "history")
 
-    # client (tolerant)
+    # client
     try: client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
         try: client = MFLClient(league_id=league_id, year=year, timezone=tz)
@@ -236,18 +221,18 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
             client = MFLClient(league_id=league_id, year=year); setattr(client, "tz", tz); setattr(client, "timezone", tz)
 
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
-
     f_names = _merge_franchise_names(week_data.get("franchise_names"), getattr(client, "franchise_names", None), cfg.get("franchise_names"))
 
+    # Weekly bits
     standings_rows = _build_standings_rows(week_data, f_names)
     starters_by_franchise = _extract_starters_by_franchise(week_data)
     players_map = week_data.get("players_map") or week_data.get("players") or {}
 
-    # Required salaries
+    # Salaries (required)
     salary_glob = _resolve_required_salaries_glob(cfg)
     salaries_df = load_salary_file(salary_glob)
 
-    # Value metrics (existing order)
+    # Values/Efficiency
     values_out: Dict[str, Any] = compute_values(
         salaries_df, players_map, starters_by_franchise, f_names, week=week, year=year
     )
@@ -255,16 +240,24 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     top_busts = values_out.get("top_busts", [])
     team_efficiency = values_out.get("team_efficiency", [])
 
-    # Week summaries
-    scores_info = _derive_weekly_scores(week_data, f_names)
+    # Scores list for history + narrative
+    weekly_scores_pairs = _derive_weekly_scores(week_data)  # [(fid, pts)]
+    scores_info = {
+        "rows": sorted([(f_names.get(fid, f"Team {fid}"), pts) for fid, pts in weekly_scores_pairs], key=lambda t:-t[1]),
+        "avg": round(sum(pts for _, pts in weekly_scores_pairs)/len(weekly_scores_pairs), 2) if weekly_scores_pairs else None,
+    }
+
+    # VP drama (also include 5th vs 6th)
     vp_drama = _derive_vp_drama(standings_rows)
+
+    # Headliners
     headliners = _derive_headliners(starters_by_franchise, players_map, f_names, top_n=10)
 
-    # Pools (confidence & survivor + odds)
+    # Pools + odds
     pool_nfl = week_data.get("pool_nfl") or {}
     survivor_pool = week_data.get("survivor_pool") or {}
 
-    conf3 = []  # [{team, top3:[{pick, rank}]}]
+    conf3 = []
     node = (pool_nfl.get("poolPicks") or {})
     franchises = node.get("franchise") or []
     if isinstance(franchises, dict): franchises = [franchises]
@@ -280,15 +273,15 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         if not target: continue
         games = target.get("game") or []
         if isinstance(games, dict): games = [games]
-        rows = []
+        picks = []
         for g in games:
             try: rank = int(str(g.get("rank") or "0"))
             except Exception: rank = 0
-            rows.append({"rank": rank, "pick": str(g.get("pick") or "").strip()})
-        rows.sort(key=lambda r: -r["rank"])
-        conf3.append({"team": name, "top3": rows[:3]})
+            picks.append({"rank": rank, "pick": str(g.get("pick") or "").strip()})
+        picks.sort(key=lambda r: -r["rank"])
+        conf3.append({"team": name, "top3": picks[:3]})
 
-    # survivor list
+    # Survivor list
     survivor_list = []
     node = (survivor_pool.get("survivorPool") or survivor_pool or {})
     franchises = node.get("franchise") or []
@@ -308,18 +301,30 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         else:
             surv_no.append(name)
 
-    # odds fetch and summarize
+    # Odds → implied probabilities → summaries
     api_key = os.environ.get("THE_ODDS_API_KEY")
     games = fetch_week_moneylines(api_key)
     team_prob = build_team_prob_index(games)
     conf_summary = _confidence_summary(conf3, team_prob)
-    # no-pick list for confidence (teams present in league but with no pool entry)
     conf_no = [t["team"] for t in conf3 if not t.get("top3")]
     surv_summary = _survivor_summary(survivor_list, team_prob)
 
-    # Payload to renderer (prose-first)
+    # ---- Season history (consistency / luck / salary burn / rankings) ----
+    history = load_history(history_dir)
+    # convert weekly_scores_pairs (fid, pts) to ensure all fids present
+    update_history(
+        history,
+        year=year,
+        week=week,
+        franchise_names=f_names,
+        weekly_scores=weekly_scores_pairs,
+        team_efficiency=team_efficiency,
+    )
+    save_history(history, history_dir)
+    season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, burn_rate_pct, ppk
+
     payload: Dict[str, Any] = {
-        "title": _cfg_get(cfg, "newsletter.title") or cfg.get("title") or "NPFFL Weekly Roast",
+        "title": _cfg_get(cfg, "newsletter.title") or "NPFFL Weekly Newsletter",
         "week_label": _week_label(week),
         "timezone": tz,
         "year": year,
@@ -340,11 +345,12 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "survivor_list": survivor_list,
         "survivor_summary": surv_summary,
         "survivor_meta": {"no_picks": surv_no},
-        # roasts array kept for future custom inserts
-        "roasts": [],
+        # season power rankings (mini table)
+        "season_rankings": season_table,
+        # assets (optional banners)
+        "assets": {"banners_dir": "assets/banners"},
     }
 
-    # Debug context
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -354,11 +360,10 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
 
     outputs = render_newsletter(payload, output_dir=str(out_dir), week=week)
     paths = [p for p in (outputs.get("md_path"), outputs.get("html_path")) if p]
-    if paths: 
+    if paths:
         for p in paths: print(f"Wrote: {p}")
         return tuple(Path(p) for p in paths)  # type: ignore[return-value]
 
-    # ensure artifact
     stub = out_dir / f"week_{_week_label(week)}.md"
     stub.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
     print(f"Wrote: {stub}")
