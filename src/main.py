@@ -17,10 +17,6 @@ from .value_engine import compute_values
 from .newsletter import render_newsletter
 
 
-# ----------------------
-# Utilities
-# ----------------------
-
 def _read_config(path: str | Path = "config.yaml") -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -52,14 +48,7 @@ def _merge_franchise_names(*maps: Dict[str, str] | None) -> Dict[str, str]:
     return out
 
 
-# ----------------------
-# Standings helpers
-# ----------------------
-
 def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
-    """
-    Prefer pre-normalized 'standings_rows' from fetch_week. Fallback to other shapes if missing.
-    """
     rows = week_data.get("standings_rows")
     if isinstance(rows, list) and rows and all(isinstance(r, dict) for r in rows):
         return rows
@@ -85,13 +74,10 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 "vp": _safe_float(r.get("vp") or r.get("victory_points") or 0),
             })
 
-    # fallback: synthesize PF from weekly_results totals if needed
+    # fallback: synthesize PF from weekly_results totals
     if not rows:
         wr = week_data.get("weekly_results") or {}
         matchups = wr.get("matchups") if isinstance(wr, dict) else None
-        if not matchups and isinstance(wr, dict) and "weeklyResults" in wr:
-            wrn = wr.get("weeklyResults") or {}
-            matchups = wrn.get("matchup")
         if isinstance(matchups, dict):
             matchups = [matchups]
         matchups = matchups or []
@@ -112,20 +98,10 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
 
 
 # ----------------------
-# Starters extraction for value engine
+# Starters extraction — handles normalized AND raw weeklyResults (global player list too)
 # ----------------------
 
 def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Output: { franchise_id: [ {player_id, player, pos, team, pts}, ... ] }
-
-    Handles:
-      1) Our normalized livescoring path: weekly_results = {'matchups':[{'franchise':[...]}]}
-      2) Raw MFL weeklyResults path:    weekly_results = {'weeklyResults': {'matchup':[{'franchise':..., 'player':...}, ...]}}
-         - Use the franchise 'starters' CSV of player IDs
-         - Look up per-player points from either matchup-level 'player' list,
-           or franchise-level 'players'/'player' lists.
-    """
     result: Dict[str, List[Dict[str, Any]]] = {}
     wr = week_data.get("weekly_results") or {}
 
@@ -140,10 +116,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                 franchises = [franchises]
             for fr in franchises:
                 fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
-
-                # preferred: explicit players array
-                players_node = fr.get("players") or {}
-                players = players_node.get("player") or []
+                players = (fr.get("players") or {}).get("player") or []
                 if isinstance(players, dict):
                     players = [players]
                 if players:
@@ -155,23 +128,36 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                             "team": (str(p.get("team") or "").strip() or None),
                             "pts": _safe_float(p.get("score") or p.get("points"), 0.0),
                         })
-                    continue
-
-                # fallback: team total
-                score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
-                result.setdefault(fid, []).append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
-
+                else:
+                    score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
+                    result.setdefault(fid, []).append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
         return result
 
-    # Path B: raw weeklyResults
-    if isinstance(wr, dict) and "weeklyResults" in wr:
-        wrn = wr.get("weeklyResults") or {}
+    # Path B: RAW weeklyResults (with global and/or matchup/franchise player nodes)
+    wrn = wr.get("weeklyResults") if isinstance(wr, dict) else None
+    if isinstance(wrn, dict):
         mlist = wrn.get("matchup") or []
         if isinstance(mlist, dict):
             mlist = [mlist]
 
+        # Index a GLOBAL player table if present (some shards do this)
+        global_players = wrn.get("player") or []
+        if isinstance(global_players, dict):
+            global_players = [global_players]
+        gp_idx: Dict[str, Dict[str, Any]] = {}
+        for p in global_players:
+            pid = str(p.get("id") or "").strip()
+            if not pid:
+                continue
+            gp_idx[pid] = {
+                "pts": _safe_float(p.get("score") or p.get("points") or 0.0),
+                "name": str(p.get("name") or "").strip(),
+                "pos": str(p.get("position") or p.get("pos") or "").strip(),
+                "team": (str(p.get("team") or "").strip() or None),
+            }
+
         for m in (mlist or []):
-            # 1) Build a matchup-level player index (id -> points + optional meta)
+            # Matchup-level player table (some shards put it here)
             match_players = m.get("player") or []
             if isinstance(match_players, dict):
                 match_players = [match_players]
@@ -187,18 +173,16 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                     "team": (str(p.get("team") or "").strip() or None),
                 }
 
-            # 2) Iterate franchises in the matchup
             franchises = m.get("franchise") or []
             if isinstance(franchises, dict):
                 franchises = [franchises]
-
             for fr in franchises:
                 fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
 
-                # 2a) franchise-level players (some shards include these)
+                # Franchise-level player list (if present)
                 f_pl = fr.get("players") or fr.get("player") or []
                 if isinstance(f_pl, dict):
-                    f_pl = f_pl.get("player") or f_pl  # tolerate {'players':{'player':[...]} } or {'player':[...] }
+                    f_pl = f_pl.get("player") or f_pl
                 if isinstance(f_pl, dict):
                     f_pl = [f_pl]
                 fp_idx: Dict[str, Dict[str, Any]] = {}
@@ -213,21 +197,20 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                         "team": (str(p.get("team") or "").strip() or None),
                     }
 
-                # 2b) parse the 'starters' CSV of player IDs
+                # Starters list is a CSV of player IDs
                 starters = fr.get("starters")
                 rows: List[Dict[str, Any]] = []
                 if isinstance(starters, str) and starters.strip():
                     for pid in [t.strip() for t in starters.split(",") if t.strip()]:
-                        meta = fp_idx.get(pid) or mp_idx.get(pid) or {}
+                        meta = fp_idx.get(pid) or mp_idx.get(pid) or gp_idx.get(pid) or {}
                         rows.append({
                             "player_id": pid,
-                            "player": str(meta.get("name") or "").strip(),  # will be enriched by players_map later
+                            "player": str(meta.get("name") or "").strip(),
                             "pos": str(meta.get("pos") or "").strip(),
                             "team": meta.get("team"),
                             "pts": _safe_float(meta.get("pts"), 0.0),
                         })
 
-                # 2c) if no starters list, at least capture team total
                 if not rows:
                     score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
                     rows.append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
@@ -236,13 +219,8 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
 
         return result
 
-    # nothing recognized → empty
     return result
 
-
-# ----------------------
-# CLI + Main
-# ----------------------
 
 def _int_or_none(s: str | None) -> int | None:
     if s is None:
@@ -324,28 +302,22 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
             setattr(client, "tz", tz)
             setattr(client, "timezone", tz)
 
-    # Pull week data
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
 
-    # Franchise names
     f_names = _merge_franchise_names(
         week_data.get("franchise_names"),
         getattr(client, "franchise_names", None),
         cfg.get("franchise_names"),
     )
 
-    # Standings + starters
     standings_rows = _build_standings_rows(week_data, f_names)
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
-    # Players map (for salary join & names)
     players_map = week_data.get("players_map") or week_data.get("players") or {}
 
-    # Salaries (required)
     salary_glob = _resolve_required_salaries_glob(cfg)
     salaries_df = load_salary_file(salary_glob)
 
-    # Value engine — your repo's signature (this order previously produced the rich Week-1 output)
     values_out: Dict[str, Any] = compute_values(
         salaries_df,
         players_map,
@@ -359,7 +331,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     top_busts = values_out.get("top_busts", [])
     team_efficiency = values_out.get("team_efficiency", [])
 
-    # Optional pools/lines
     pool_nfl = week_data.get("pool_nfl") or {}
     survivor_pool = week_data.get("survivor_pool") or {}
     lines = week_data.get("lines") or week_data.get("odds") or []
@@ -381,7 +352,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "roasts": [],
     }
 
-    # --- sanity checks (fail fast if there's no data) ---
     problems = []
     if not standings_rows:
         problems.append("standings_rows is empty (no standings/boxscores found)")
@@ -398,7 +368,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         print("[sanity] week_data keys:", wk_keys)
         raise SystemExit(3)
 
-    # Debug dump
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -406,9 +375,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     except Exception:
         pass
 
-    # Render newsletter
     outputs_dict = render_newsletter(payload, output_dir=str(out_dir), week=week)
-
     md_path = outputs_dict.get("md_path")
     html_path = outputs_dict.get("html_path")
     paths: List[Path] = []
