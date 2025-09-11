@@ -191,7 +191,7 @@ def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
     Determine the salary file path or glob. Must match at least one file.
     Resolution order:
       1) config top-level: salaries_path / salaries_file / salary_file
-      2) config nested: inputs.salary_glob (your config.yaml uses this)
+      2) config nested: inputs.salary_glob
       3) env: SALARY_GLOB
       4) common defaults: data/salaries/*.xlsx, salaries/*.xlsx
     """
@@ -229,18 +229,25 @@ def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
         if matches:
             return pat
 
+    # If no matches, print a clear error and exit (avoid invalid starred listcomp inline)
     msg = [
         "[salary] No salary files found.",
         "Looked for a file or glob in the following locations:",
-        *[f"  - {p}" for p in tried] if tried else ["  - (no patterns to try)"],
+    ]
+    if tried:
+        msg.extend([f"  - {p}" for p in tried])
+    else:
+        msg.append("  - (no patterns to try)")
+
+    msg.extend([
         "",
-        "Your config includes 'inputs.salary_glob' support (e.g., inputs.salary_glob: data/salaries/*.xlsx).",
+        "Your config supports 'inputs.salary_glob' (e.g., inputs.salary_glob: data/salaries/*.xlsx).",
         "How to fix:",
-        "  • Add one of these to your config.yaml: salaries_path / salaries_file / salary_file,",
+        "  • Add one of these to config.yaml: salaries_path / salaries_file / salary_file,",
         "    or set inputs.salary_glob: <glob>,",
         "    or set env SALARY_GLOB with a valid glob.",
         "  • Ensure the matching .xlsx file(s) are present in the repo or accessible to the runner.",
-    ]
+    ])
     print("\n".join(msg), file=sys.stderr)
     sys.exit(2)
 
