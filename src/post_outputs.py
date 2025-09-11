@@ -1,53 +1,451 @@
-# src/post_outputs.py
 from __future__ import annotations
-import os, sys, json, time
-from typing import Optional
-import requests
+from typing import Any, Dict, List, Tuple
+import statistics, random, re
+from collections import Counter, defaultdict
 
-def post_to_slack(text: str) -> None:
-    url = os.getenv("SLACK_WEBHOOK_URL", "")
-    if not url: 
-        print("[post_outputs] Slack webhook not set; skipping.", file=sys.stderr)
-        return
-    payload = {"text": text}
-    r = requests.post(url, data=json.dumps(payload), headers={"Content-Type":"application/json"}, timeout=20)
+# =========================
+# Tone dial & prose helpers
+# =========================
+
+class Tone:
+    def __init__(self, name: str = "spicy"):
+        self.name = (name or "spicy").strip().lower()
+        if self.name not in ("mild", "spicy", "inferno"):
+            self.name = "spicy"
+
+    @property
+    def emojis(self) -> Dict[str, str]:
+        if self.name == "mild":
+            return {"fire":"", "ice":"", "dart":"", "warn":"", "boom":"", "jail":""}
+        if self.name == "inferno":
+            return {"fire":"🔥", "ice":"🧊", "dart":"🎯", "warn":"🟡", "boom":"💥", "jail":"🚔"}
+        return {"fire":"🔥", "ice":"🧊", "dart":"🎯", "warn":"🟡", "boom":"💥", "jail":"🚔"}
+
+    def amp(self, text_spicy: str, text_mild: str = "") -> str:
+        if self.name == "mild":
+            return text_mild or re.sub(r"[!?]+", ".", text_spicy)
+        if self.name == "inferno":
+            return text_spicy
+        return text_spicy
+
+class ProseBuilder:
+    def __init__(self, tone: Tone):
+        self.used_templates: set[str] = set()
+        self.tone = tone
+
+    def choose_unique(self, templates: List[str]) -> str:
+        pool = [t for t in templates if t not in self.used_templates]
+        pick = random.choice(pool or templates)
+        self.used_templates.add(pick)
+        return pick
+
+    def sentence(self, *parts: str) -> str:
+        text = " ".join(p.strip() for p in parts if p and p.strip())
+        text = re.sub(r"\s+", " ", text).strip()
+        if text and text[-1] not in ".!?…": text += "."
+        return text
+
+    def paragraph(self, *sentences: str) -> str:
+        return " ".join(s for s in sentences if s and s.strip())
+
+def _fmt2(x: float | int | None, default="0.00") -> str:
+    if x is None: return default
+    try: return f"{float(x):.2f}"
+    except Exception: return default
+
+def _collapse(items: List[str], n: int) -> List[str]:
+    c = Counter([s.strip() for s in items if s and str(s).strip()])
+    return [k for k,_ in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))][:n]
+
+# ===================
+# Weekly Results
+# ===================
+
+def weekly_results_blurb(scores: Dict[str, Any], tone: Tone) -> str:
+    rows = scores.get("rows") or []
+    if not rows: return ""
+    top_team, top_pts = rows[0]
+    bot_team, bot_pts = rows[-1]
+    pts_only = [p for _, p in rows]
+    median = statistics.median(pts_only) if pts_only else 0.0
+    band_low = f"{max(min(pts_only), median-5):.2f}" if pts_only else f"{median:.2f}"
+    band_high = f"{min(max(pts_only), median+5):.2f}" if pts_only else f"{median:.2f}"
+    chasers = ", ".join([t for t,_ in rows[1:6]]) if len(rows) > 6 else ", ".join([t for t,_ in rows[1:]])
+
+    pb = ProseBuilder(tone)
+    lead  = pb.sentence(f"**{top_team}** led the slate at **{_fmt2(top_pts)}**; **{bot_team}** brought up the rear at **{_fmt2(bot_pts)}**")
+    mid   = pb.sentence(f"{chasers} kept it loud behind them")
+    chaos = pb.sentence(f"The room lived between **{band_low}–{band_high}** — one slot decided bragging rights")
+    return pb.paragraph(lead, mid, chaos)
+
+def weekly_results_roast(tone: Tone) -> str:
+    e = tone.emojis["boom"]
+    if tone.name == "mild":
+        return "Margins were thin; decisions mattered."
+    if tone.name == "inferno":
+        return f"{e} The middle was a blender—stack or get shredded."
+    return f"{e} One wrong click and you were chasing all night."
+
+# ===================
+# VP Drama
+# ===================
+
+def vp_drama_blurb(vp: Dict[str, Any], tone: Tone) -> str:
+    if not vp: return ""
+    villain, bubble, gap = vp.get("villain"), vp.get("bubble"), vp.get("gap_pf")
+    top5 = vp.get("top5") or []
+    sixth = vp.get("sixth") or {}
+    top_names = ", ".join(r["name"] for r in top5) if top5 else "—"
+    sixth_name = sixth.get("name","—")
+
+    pb = ProseBuilder(tone)
+    a = pb.sentence(f"**League Villain:** {villain} grabbed the last 2.5 VP seat; {bubble} missed by **{_fmt2(gap)}** PF")
+    b = pb.sentence(f"Up top: {top_names}. First outside the velvet rope: **{sixth_name}**")
+    c = pb.sentence("Decimal scoring turns whispers into grudges")
+    return pb.paragraph(a, b, c)
+
+def vp_drama_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Close calls build rivalries; this one just got interesting."
+    return f"{tone.emojis['fire']} Bottle service is closed—someone’s filing emotional chargebacks."
+
+# ===================
+# Headliners
+# ===================
+
+_HEAD_TEMPLATES = [
+    "— **{team}** built their night on {plays}",
+    "— **{team}** rode {plays} and didn’t look back",
+    "— **{team}** got lift from {plays}",
+    "— **{team}** stacked {plays} and made it count",
+    "— **{team}** let {plays} carry the load",
+]
+
+def headliners_blurb(rows: List[Dict[str, Any]], tone: Tone) -> str:
+    if not rows: return ""
+    team_plays: Dict[str, List[str]] = {}
+    for h in rows[:10]:
+        who = (h.get("player") or "").strip() or "Somebody"
+        pts = _fmt2(h.get("pts"))
+        token = f"{who} {pts}"
+        for team in h.get("managers", []):
+            team_plays.setdefault(team, []).append(token)
+
+    if not team_plays:
+        return ""
+
+    pb = ProseBuilder(tone)
+    lines: List[str] = []
+    ordered = sorted(team_plays.items(), key=lambda kv: -len(kv[1]))[:4]
+    for team, plays in ordered:
+        uniq, seen = [], set()
+        for p in plays:
+            nm = p.split(" ", 1)[0]
+            if nm not in seen:
+                uniq.append(p); seen.add(nm)
+            if len(uniq) == 2: break
+        top2 = ", ".join(uniq) if uniq else ", ".join(plays[:2])
+        tmpl = pb.choose_unique(_HEAD_TEMPLATES)
+        lines.append(tmpl.format(team=team, plays=top2))
+
+    closer = tone.amp("If you faded those names, you spent the night chasing.", "The headliners made the difference.")
+    return " ".join(lines) + " " + closer
+
+def headliners_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Star power made the difference."
+    return f"{tone.emojis['fire']} The highlight reel was ruthless."
+
+# ===================
+# Values / Busts (team-first)
+# ===================
+
+_VAL_OPENERS = [
+    "The bargain bin paid out where it mattered:",
+    "Smart money found the quiet corners:",
+    "The best tags wore no neon:",
+]
+_BUST_OPENERS = [
+    "On the other side of the ledger:",
+    "Meanwhile, the pricey names left bruises:",
+    "The tax bracket didn’t buy points here:",
+]
+
+def _team_support_blurb(rows: List[Dict[str, Any]], cap_players: int = 2) -> List[Tuple[str, str]]:
+    team_to_players: Dict[str, List[str]] = defaultdict(list)
+    team_counts: Counter = Counter()
+    for r in rows:
+        who = (r.get("player") or "Someone").strip()
+        mans = r.get("managers") or []
+        for t in mans:
+            if who not in team_to_players[t]:
+                team_to_players[t].append(who)
+            team_counts[t] += 1
+    if not team_counts:
+        return []
+    ordered = sorted(team_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    out: List[Tuple[str,str]] = []
+    for team, _ in ordered[:3]:
+        names = team_to_players.get(team, [])[:cap_players]
+        out.append((team, ", ".join(names)))
+    return out
+
+def values_blurb(values: List[Dict[str, Any]], tone: Tone) -> str:
+    if not values: return "No value play broke the room this time."
+    pb = ProseBuilder(tone)
+    opener = pb.choose_unique(_VAL_OPENERS)
+    teams = _team_support_blurb(values, cap_players=2)
+    if not teams:
+        names = ", ".join(_collapse([v.get("player") for v in values], 3))
+        return pb.paragraph(pb.sentence(opener, names), "Edges come from quiet clicks, not loud salaries.")
+    leader = teams[0]
+    runner = teams[1] if len(teams) > 1 else None
+    lead_line = pb.sentence(f"**Biggest Heist:** {leader[0]} turned budget tags into real points with {leader[1]}")
+    if runner:
+        run_line = pb.sentence(f"**Runner-up:** {runner[0]} found similar juice with {runner[1]}")
+        close = pb.sentence("That’s how you buy ceiling without paying sticker")
+        return pb.paragraph(opener, lead_line, run_line, close)
+    close = pb.sentence("That’s how you buy ceiling without paying sticker")
+    return pb.paragraph(opener, lead_line, close)
+
+def values_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Sharp choices, clean returns."
+    return f"{tone.emojis['dart']} Quiet tags, loud results."
+
+def busts_blurb(busts: List[Dict[str, Any]], tone: Tone) -> str:
+    if not busts: return "Premium chalk held serve—no headline busts worth circling."
+    pb = ProseBuilder(tone)
+    opener = pb.choose_unique(_BUST_OPENERS)
+    teams = _team_support_blurb(busts, cap_players=2)
+    if not teams:
+        names = ", ".join(_collapse([b.get("player") for b in busts], 3))
+        return pb.paragraph(pb.sentence(opener, names), "The cap hit was real; the points were not.")
+    leader = teams[0]
+    runner = teams[1] if len(teams) > 1 else None
+    lead_line = pb.sentence(f"**Overpriced Misfire:** {leader[0]} paid up and got little back—{leader[1]} led the regret")
+    if runner:
+        run_line = pb.sentence(f"**Honorable Mention:** {runner[0]} weren’t far behind on sunk cost")
+        close = pb.sentence("That’s a receipt nobody frames")
+        return pb.paragraph(opener, lead_line, run_line, close)
+    close = pb.sentence("That’s a receipt nobody frames")
+    return pb.paragraph(opener, lead_line, close)
+
+def busts_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Expensive names, quiet nights."
+    return f"{tone.emojis['ice']} Paying premium for silence is a special skill."
+
+# ===================
+# Power Vibes (season prose)
+# ===================
+
+def power_vibes_blurb(season_rows: List[Dict[str, Any]], tone: Tone) -> str:
+    if not season_rows: return "Season board loading…"
+    pb = ProseBuilder(tone)
+    top = [r["team"] for r in season_rows[:3]]
+    bot = [r["team"] for r in season_rows[-3:]] if len(season_rows) >= 3 else []
+    lines = []
+    if top:
+        lines.append(pb.sentence(f"{', '.join(top)} turned salary into points without the drama"))
+    if bot:
+        lines.append(pb.sentence(f"{', '.join(bot)} burned cash and never found the throttle"))
+    lines.append(pb.sentence("Everyone else is bartering with variance week to week"))
+    return pb.paragraph(*lines)
+
+def power_vibes_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Early patterns usually hold—until they don’t."
+    return f"{tone.emojis['fire']} Rank is rented; payments are weekly."
+
+# ===================
+# Confidence (odds narrative)
+# ===================
+
+def _bold_score(rank: int, prob: float) -> float:
     try:
-        r.raise_for_status()
-        print("[post_outputs] Posted to Slack.")
-    except Exception as e:
-        print(f"[post_outputs] Slack error: {e} {r.text}", file=sys.stderr)
+        r = float(rank); p = float(prob)
+    except Exception:
+        return 0.0
+    return max(0.0, r) * max(0.0, 1.0 - min(max(p, 0.0), 1.0))
 
-# Minimal Mailchimp sender (create campaign -> set content -> send)
-def mailchimp_send(subject: str, html: str) -> None:
-    api_key = os.getenv("MC_API_KEY", "")
-    dc = os.getenv("MC_SERVER_PREFIX", "")  # e.g., us21
-    list_id = os.getenv("MC_LIST_ID", "")
-    if not (api_key and dc and list_id):
-        print("[post_outputs] Mailchimp not configured; skipping.", file=sys.stderr)
-        return
-    auth = ("anystring", api_key)
-    base = f"https://{dc}.api.mailchimp.com/3.0"
+def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], no_picks: List[str], tone: Tone) -> str:
+    if not conf3 and not no_picks:
+        return "No Confidence cards this week."
+    teams = []
+    upset_pick = None
+    safe_scores: Dict[str, float] = {}
 
-    # 1) create campaign
-    camp = {
-        "type": "regular",
-        "recipients": {"list_id": list_id},
-        "settings": {
-            "subject_line": subject,
-            "title": f"{subject} {int(time.time())}",
-            "from_name": "NPFFL",
-            "reply_to": "no-reply@example.com",
-        },
-    }
-    r = requests.post(f"{base}/campaigns", auth=auth, json=camp, timeout=30)
-    r.raise_for_status()
-    cid = r.json()["id"]
+    for row in conf3:
+        t = row.get("team","Team")
+        bold, safe = 0.0, 0.0
+        for g in row.get("top3", []):
+            r = int(g.get("rank", 0))
+            code = str(g.get("pick","")).upper()
+            p = float(team_prob.get(code, 0.5))
+            w = _bold_score(r, p)
+            if upset_pick is None or (w > 0 and p < (upset_pick[2] if upset_pick else 1.0)):
+                upset_pick = (t, code, p, r)
+            bold += w
+            safe += r * p
+        teams.append((t, bold, safe))
+        safe_scores[t] = safe
 
-    # 2) set content
-    r = requests.put(f"{base}/campaigns/{cid}/content", auth=auth, json={"html": html}, timeout=30)
-    r.raise_for_status()
+    parts: List[str] = []
+    if teams:
+        teams.sort(key=lambda x: (-x[1], x[2], x[0]))
+        bold_names = [t for t,_,_ in teams if teams[0][1] > 0][:3]
+        if bold_names:
+            parts.append(f"{tone.emojis['fire']} **Bold Board:** {', '.join(bold_names)} pushed live dogs into top slots.")
+        chalk_team = max(safe_scores.items(), key=lambda kv: kv[1])[0] if safe_scores else None
+        if chalk_team:
+            parts.append(f"{tone.emojis['ice']} **Chalk Fortress:** {chalk_team} stacked heavy favorites and slept fine.")
+    if upset_pick:
+        t, code, p, r = upset_pick
+        parts.append(f"{tone.emojis['dart']} **Upset Ticket:** {t} hit {code} at rank {r}, beating a {int(round((1-p)*100))}% ‘nope’ from Vegas.")
+    if no_picks:
+        parts.append(f"{tone.emojis['warn']} **Ghost Entries:** {', '.join(no_picks)} left cards blank; excuses pending.")
+    return " ".join(parts) if parts else "Everything landed in the middle—no heroes, no villains."
 
-    # 3) send
-    r = requests.post(f"{base}/campaigns/{cid}/actions/send", auth=auth, timeout=30)
-    r.raise_for_status()
-    print("[post_outputs] Mailchimp campaign sent.")
+def confidence_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Upsets make the room louder; chalk makes it calmer."
+    return f"{tone.emojis['dart']} Pick bravely or live quietly."
+
+# ===================
+# Survivor (odds narrative)
+# ===================
+
+def survivor_story(surv: List[Dict[str, Any]], team_prob: Dict[str, float], no_picks: List[str], tone: Tone) -> str:
+    if not surv and not no_picks:
+        return "No Survivor tickets posted."
+    pieces: List[str] = []
+    if surv:
+        picks = [(r.get("team","Team"), str(r.get("pick","")).upper(), float(team_prob.get(str(r.get("pick","")).upper(), 0.5))) for r in surv if r.get("pick")]
+        if picks:
+            picks.sort(key=lambda x: x[2])  # lowest prob = boldest
+            bold = [f"{t} → {code}" for t,code,_ in picks[:2]]
+            if len(picks) > 2:
+                bold.append(f"{picks[2][0]} → {picks[2][1]}")
+            pieces.append(f"{tone.emojis['fire']} **Boldest Lifelines:** {', '.join(bold)} — tightrope work, clean landing.")
+            from collections import Counter
+            codes = [c for _,c,_ in picks]
+            common_code, _ = sorted(Counter(codes).items(), key=lambda x: (-x[1], x[0]))[0]
+            p = float(team_prob.get(common_code, 0.75))
+            pieces.append(f"{tone.emojis['ice']} **Boring Consensus:** {common_code} ({int(round(p*100))}% implied) — training wheels engaged.")
+    if no_picks:
+        pieces.append(f"{tone.emojis['warn']} **No-Show:** {', '.join(no_picks)} skipped the booth.")
+    return " ".join(pieces)
+
+def survivor_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Staying alive is half the game."
+    return f"{tone.emojis['fire']} Survivor pays the brave and exposes the cautious."
+
+# ===================
+# Chalk vs Leverage (ownership)
+# ===================
+
+def chalk_leverage_blurb(starters_by_franchise: Dict[str, List[Dict[str, Any]]] | None, tone: Tone) -> str:
+    if not starters_by_franchise:
+        return "Ownership patterns were thin this week."
+
+    total_entries = max(1, len(starters_by_franchise))
+    player_to_count: Counter = Counter()
+    player_to_pts: Dict[str, float] = {}
+
+    for _, rows in starters_by_franchise.items():
+        seen_names = set()
+        for r in rows:
+            name = (r.get("player") or "").strip()
+            if not name or name in seen_names:
+                continue
+            seen_names.add(name)
+            pts = float(r.get("pts") or 0.0)
+            player_to_count[name] += 1
+            player_to_pts[name] = max(player_to_pts.get(name, pts), pts)
+
+    if not player_to_count:
+        return "Ownership patterns were thin this week."
+
+    counts = sorted(player_to_count.values())
+    median_cnt = counts[len(counts)//2]
+    chalk_cut = max(2, median_cnt)
+    leverage_cut = max(1, int(0.15 * total_entries))
+
+    chalk_face, leverage_paid = [], []
+    for name, cnt in player_to_count.items():
+        pts = player_to_pts.get(name, 0.0)
+        if cnt >= chalk_cut and pts <= 10.0:
+            chalk_face.append((name, cnt, pts))
+        if cnt <= leverage_cut and pts >= 20.0:
+            leverage_paid.append((name, cnt, pts))
+
+    chalk_face.sort(key=lambda x: (-x[1], x[2], x[0]))
+    leverage_paid.sort(key=lambda x: (x[1], -x[2], x[0]))
+
+    pb = ProseBuilder(tone)
+    pieces = []
+    if chalk_face:
+        nm, _, pts = chalk_face[0]
+        pieces.append(pb.sentence(f"**Chalk that face-planted:** {nm} was everywhere and gave back **{_fmt2(pts)}**"))
+    if leverage_paid:
+        nm, _, pts = leverage_paid[0]
+        pieces.append(pb.sentence(f"**Leverage that paid:** {nm} was a quiet click that cashed for **{_fmt2(pts)}**"))
+    if not pieces:
+        return "Chalk behaved and leverage was tame."
+    return " ".join(pieces)
+
+def chalk_leverage_roast(tone: Tone) -> str:
+    if tone.name == "mild":
+        return "Ownership told a familiar story."
+    return f"{tone.emojis['dart']} Fading the brochure is still a strategy."
+
+# ===================
+# Around the League (one-liners, no duplicates)
+# ===================
+
+_ATL_TEMPLATES_100 = [
+    "{team} didn’t just clear the bar—they raised it to **{pts}**",
+    "{team} set the tone at **{pts}** and kept the door shut",
+    "{team} was first to the punch at **{pts}**",
+]
+_ATL_TEMPLATES_90 = [
+    "{team} kept the speakers loud at **{pts}**",
+    "{team} stayed in the VIP at **{pts}**",
+    "{team} kept the lights flashing with **{pts}**",
+]
+_ATL_TEMPLATES_80 = [
+    "{team} stayed in the mosh pit at **{pts}**",
+    "{team} held serve at **{pts}**",
+    "{team} kept pace with **{pts}**",
+]
+_ATL_TEMPLATES_LOW = [
+    "{team} paid cover and stared at **{pts}**",
+    "{team} brought a folding chair to **{pts}**",
+    "{team} rode the brake to **{pts}**",
+]
+
+def _atl_template_for(pts: float) -> List[str]:
+    if pts >= 100: return _ATL_TEMPLATES_100
+    if pts >= 90:  return _ATL_TEMPLATES_90
+    if pts >= 80:  return _ATL_TEMPLATES_80
+    return _ATL_TEMPLATES_LOW
+
+def around_the_league_lines(franchise_names: Dict[str,str], scores_info: Dict[str,Any], week: int, tone: Tone, n: int = 7) -> List[str]:
+    rows = scores_info.get("rows") or []
+    if not rows: return []
+    # rotate selection window by week, then sample without replacement
+    k = (max(1, week) - 1) % len(rows)
+    pool = rows[k:] + rows[:k]
+    pick = pool[:max(1, min(n, len(pool)))]
+    pb = ProseBuilder(tone)
+    out, used = [], set()
+    for name, pts in pick:
+        if name in used:  # hard de-dupe
+            continue
+        used.add(name)
+        tmpl = pb.choose_unique(_atl_template_for(float(pts)))
+        line = tmpl.format(team=name, pts=_fmt2(pts))
+        out.append(pb.sentence(line))
+    return out
