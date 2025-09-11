@@ -3,7 +3,6 @@ import html
 from pathlib import Path
 from typing import Any, Dict, List
 
-# optional markdown fallback
 try:
     import markdown as _md
     def _render_markdown(md_text: str) -> str:
@@ -21,21 +20,19 @@ def _mini_table(headers: List[str], rows: List[List[str]]) -> str:
     lines = []
     lines.append("| " + " | ".join(headers) + " |")
     lines.append("| " + " | ".join("---" for _ in headers) + " |")
-    for r in rows:
-        lines.append("| " + " | ".join(r) + " |")
+    for r in rows: lines.append("| " + " | ".join(r) + " |")
     lines.append("")
     return "\n".join(lines)
 
 def _banners_cell(name: str, fid: str, banners_dir: str) -> str:
     from pathlib import Path
     p = Path(banners_dir) / f"{fid}.png"
-    if p.exists():
-        return f"![{name}]({banners_dir}/{fid}.png)"
-    return name
+    return f"![{name}]({banners_dir}/{fid}.png)" if p.exists() else name
 
 def _mk_md(payload: Dict[str, Any]) -> str:
     title = payload.get("title", "NPFFL Weekly Newsletter")
     week_label = payload.get("week_label", "00")
+    tz = payload.get("timezone", "America/New_York")
 
     standings = payload.get("standings_rows") or []
     values = payload.get("top_values") or []
@@ -61,26 +58,26 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     out: List[str] = []
     out.append(f"# {title} — Week {week_label}\n")
 
-    # Weekly Results (your requested long blurb)
+    # Weekly Results first (long prose)
     out.append("## Weekly Results")
     out.append(rb.weekly_results_blurb(scores) + "\n")
 
-    # VP Drama (expanded)
+    # VP Drama (expanded, no repetition)
     if payload.get("vp_drama"):
         out.append("## VP Drama")
         out.append(rb.vp_drama_blurb(payload["vp_drama"]) + "\n")
 
-    # Headliners (prose only)
+    # Headliners (prose, varied verbs/objects)
     if headliners:
         out.append("## Headliners")
         out.append(rb.headliners_blurb(headliners) + "\n")
 
-    # Values / Busts (prose)
+    # Values & Busts (prose only)
     out.append("## Value vs. Busts")
     out.append(rb.values_blurb(values))
     out.append(rb.busts_blurb(busts) + "\n")
 
-    # Power Vibes (prose lead + mini table SEASON RANKINGS)
+    # Power Vibes (season) + mini table
     out.append("## Power Vibes (Season-to-Date)")
     out.append(rb.power_vibes_blurb(season_rank) + "\n")
     if season_rank:
@@ -98,7 +95,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             ])
         out.append(_mini_table(headers, rows))
 
-    # Confidence (odds; prose lead + mini bullets)
+    # Confidence (mini bullets)
     if conf3:
         out.append("## Confidence Pick’em")
         out.append(rb.confidence_blurb(conf_summary, conf_no) + "\n")
@@ -108,7 +105,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             out.append(f"- **{team}** — {top3}")
         out.append("")
 
-    # Survivor (prose + mini table)
+    # Survivor (mini table)
     if surv:
         out.append("## Survivor Pool")
         out.append(rb.survivor_blurb(surv_summary, surv_no) + "\n")
@@ -116,7 +113,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
         s_rows = [[r.get("team",""), r.get("pick","—") or "—"] for r in surv]
         out.append(_mini_table(s_hdr, s_rows))
 
-    # Rotating segments
+    # Rotating segments (tight one-liners)
     fw = rb.fraud_watch_blurb(eff)
     if fw: out.append(fw + "\n")
     jail = rb.fantasy_jail_blurb(starters_idx, f_map)
@@ -124,7 +121,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     dd = rb.dumpster_division_blurb(standings)
     if dd: out.append(dd + "\n")
 
-    # Standings (tiny table at end; banners supported)
+    # Standings (tiny table at end)
     if standings:
         out.append("## Standings (Week-to-date)")
         hdr = ["Team", "PF", "VP"]
