@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import glob
+import inspect
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -13,7 +14,7 @@ import yaml
 from .mfl_client import MFLClient
 from .fetch_week import fetch_week_data           # returns a dict of week data
 from .load_salary import load_salary_file         # expects a path or glob string; returns a pandas DataFrame
-from .value_engine import compute_values          # returns dict: top_values, top_busts, team_efficiency, starters_with_salary
+from .value_engine import compute_values          # signature varies by repo version
 from .newsletter import render_newsletter
 
 
@@ -63,7 +64,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
     """
     rows: List[Dict[str, Any]] = []
 
-    # Shape A: week_data["standings"] already normalized
     st = week_data.get("standings")
     if isinstance(st, list) and st and all(isinstance(r, dict) for r in st):
         for r in st:
@@ -74,8 +74,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 "pf": _safe_float(r.get("pf") or r.get("points_for") or r.get("points") or 0),
                 "vp": _safe_float(r.get("vp") or r.get("victory_points") or 0),
             })
-
-    # Shape B: standings like {"franchises":[{"id": "...", "pf":..., "vp":...}, ...]}
     elif isinstance(st, dict) and "franchises" in st:
         for r in st["franchises"] or []:
             fid = str(r.get("id") or r.get("franchise_id") or "").zfill(4)
@@ -86,7 +84,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 "vp": _safe_float(r.get("vp") or r.get("victory_points") or 0),
             })
 
-    # Fallback: synthesize PF from weekly_results boxscores
     if not rows:
         pf_map: Dict[str, float] = {}
         wr = week_data.get("weekly_results") or {}
@@ -141,9 +138,11 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
             side_list = side if isinstance(side, list) else [side]
             for s in side_list:
                 fid = str(s.get("id") or s.get("franchise_id") or "").zfill(4)
+
                 starters = s.get("starters") or s.get("players") or []
                 if isinstance(starters, dict) and "player" in starters:
                     starters = starters["player"]
+
                 if isinstance(starters, list):
                     for p in starters:
                         row = {
@@ -162,6 +161,72 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
 
 
 # ----------------------
+# Adaptive value engine wiring
+# ----------------------
+
+def _build_players_map_from_sources(week_data: Dict[str, Any],
+                                    starters_by_franchise: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    """
+    Try to get players map from week_data, otherwise synthesize from starters.
+    Shape: { player_id: {"name":..., "pos":..., "team":...}, ... }
+    """
+    # Try common keys first
+    for key in ("players_map", "players", "player_map"):
+        pm = week_data.get(key)
+        if isinstance(pm, dict) and pm:
+            return pm
+
+    # Synthesize from starters
+    pm: Dict[str, Dict[str, Any]] = {}
+    for flist in starters_by_franchise.values():
+        for p in flist:
+            pid = str(p.get("player_id") or "").strip()
+            if not pid:
+                continue
+            pm.setdefault(pid, {
+                "name": p.get("player"),
+                "pos": p.get("pos"),
+                "team": p.get("team"),
+            })
+    return pm
+
+
+def _call_compute_values_adaptive(week_data: Dict[str, Any],
+                                  starters_by_franchise: Dict[str, List[Dict[str, Any]]],
+                                  franchise_names: Dict[str, str],
+                                  salaries_df) -> Dict[str, Any]:
+    """
+    Inspect compute_values() signature and call with arguments in the expected order.
+    Supports common historical variants.
+    """
+    params = list(inspect.signature(compute_values).parameters.keys())
+
+    players_map = _build_players_map_from_sources(week_data, starters_by_franchise)
+
+    # Map possible parameter names to the right objects
+    param_value_map: Dict[str, Any] = {}
+    for p in params:
+        pl = p.lower()
+        if pl in ("players_map", "players", "player_map", "pmap"):
+            param_value_map[p] = players_map
+        elif pl in ("starters_by_franchise", "starters", "starters_map", "sbf"):
+            param_value_map[p] = starters_by_franchise
+        elif pl in ("franchise_names", "franchises", "franchise_map", "f_names", "fname_map"):
+            param_value_map[p] = franchise_names
+        elif pl in ("salaries_df", "salaries", "salary_df", "salariesframe"):
+            param_value_map[p] = salaries_df
+        elif pl in ("week_data", "data", "context"):
+            param_value_map[p] = week_data
+        else:
+            # Unknown param: pass None (many implementations guard/ignore extras)
+            param_value_map[p] = None
+
+    # Build args in declared order
+    args_in_order = [param_value_map[p] for p in params]
+    return compute_values(*args_in_order)
+
+
+# ----------------------
 # CLI + Main
 # ----------------------
 
@@ -175,9 +240,6 @@ def _int_or_none(s: str | None) -> int | None:
 
 
 def _cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
-    """
-    Get nested config by dot path (e.g., 'inputs.salary_glob').
-    """
     cur = cfg
     for part in dotted.split("."):
         if not isinstance(cur, dict) or part not in cur:
@@ -193,27 +255,23 @@ def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
       1) config top-level: salaries_path / salaries_file / salary_file
       2) config nested: inputs.salary_glob
       3) env: SALARY_GLOB
-      4) common defaults: data/salaries/*.xlsx, salaries/*.xlsx
+      4) defaults: data/salaries/*.xlsx, salaries/*.xlsx
     """
     candidates: List[str] = []
 
-    # 1) top-level keys
     for k in ("salaries_path", "salaries_file", "salary_file"):
         v = cfg.get(k)
         if v:
             candidates.append(str(v))
 
-    # 2) nested: inputs.salary_glob
     v = _cfg_get(cfg, "inputs.salary_glob")
     if v:
         candidates.append(str(v))
 
-    # 3) env
     env_glob = os.environ.get("SALARY_GLOB")
     if env_glob:
         candidates.append(env_glob)
 
-    # 4) sensible defaults
     candidates.extend([
         "data/salaries/*.xlsx",
         "salaries/*.xlsx",
@@ -229,7 +287,6 @@ def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
         if matches:
             return pat
 
-    # If no matches, print a clear error and exit (avoid invalid starred listcomp inline)
     msg = [
         "[salary] No salary files found.",
         "Looked for a file or glob in the following locations:",
@@ -303,18 +360,16 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
     # ---- REQUIRED salaries: resolve, validate, and load ----
-    salaries_pattern = _resolve_required_salaries_path(cfg)  # checks inputs.salary_glob
+    salaries_pattern = _resolve_required_salaries_path(cfg)
     salaries_df = load_salary_file(salaries_pattern)
 
-    # Compute value metrics, try multiple signatures defensively
-    values_out: Dict[str, Any] = {}
-    try:
-        values_out = compute_values(starters_by_franchise, salaries_df, f_names)
-    except TypeError:
-        try:
-            values_out = compute_values(starters_by_franchise, salaries_df)
-        except TypeError:
-            values_out = compute_values(starters_by_franchise)
+    # ---- Adaptive compute_values call ----
+    values_out: Dict[str, Any] = _call_compute_values_adaptive(
+        week_data=week_data,
+        starters_by_franchise=starters_by_franchise,
+        franchise_names=f_names,
+        salaries_df=salaries_df,
+    )
 
     top_values = values_out.get("top_values", [])
     top_busts = values_out.get("top_busts", [])
