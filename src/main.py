@@ -172,20 +172,20 @@ def _resolve_required_salaries_glob(cfg: Dict[str, Any]) -> str:
     Prefers config inputs.salary_glob, then top-level keys, then sensible defaults.
     """
     candidates: List[str] = []
-    # config: nested first (your config.yaml uses this)
+
     v = _cfg_get(cfg, "inputs.salary_glob")
     if v:
         candidates.append(str(v))
-    # config: top-level variants
+
     for k in ("salaries_path", "salaries_file", "salary_file"):
         v = cfg.get(k)
         if v:
             candidates.append(str(v))
-    # env override (optional)
+
     env_glob = os.environ.get("SALARY_GLOB")
     if env_glob:
         candidates.append(env_glob)
-    # sensible defaults
+
     candidates.extend(["data/salaries/*.xlsx", "salaries/*.xlsx"])
 
     tried: List[str] = []
@@ -217,9 +217,8 @@ def _resolve_required_salaries_glob(cfg: Dict[str, Any]) -> str:
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="NPFFL Weekly Roast generator")
     ap.add_argument("--config", default=os.environ.get("NPFFL_CONFIG", "config.yaml"))
-    ap.add_argument("--week", type=_int_or_none, default=None)  # tolerant of empty string
+    ap.add_argument("--week", type=_int_or_none, default=None)
     ap.add_argument("--out-dir", default=os.environ.get("NPFFL_OUTDIR", "build"))
-    ap.add_argument("--make-html", action="store_true", default=True)
     return ap.parse_args()
 
 
@@ -232,12 +231,11 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     tz = cfg.get("timezone") or cfg.get("tz") or "America/New_York"
     week = args.week if args.week is not None else int(cfg.get("week") or 1)
 
-    # Output dir: prefer config override if present
     cfg_out_dir = _cfg_get(cfg, "outputs.dir")
     out_dir = Path(cfg_out_dir or args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Instantiate client (tolerate older/newer ctor signatures)
+    # MFL client ctor tolerance
     try:
         client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
@@ -248,7 +246,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
             setattr(client, "tz", tz)
             setattr(client, "timezone", tz)
 
-    # Fetch all week data
+    # Pull week data
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
 
     # Franchise names
@@ -262,15 +260,15 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     standings_rows = _build_standings_rows(week_data, f_names)
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
-    # Players map for value engine (from fetch_week)
+    # Players map (for salary match)
     players_map = week_data.get("players_map") or week_data.get("players") or {}
 
-    # REQUIRED salaries
+    # Salaries (required)
     salary_glob = _resolve_required_salaries_glob(cfg)
     salaries_df = load_salary_file(salary_glob)
 
-    # ---- Call value engine with your repo's expected ordering ----
-    #   compute_values(salary_df, players_map, starters_by_franchise, franchise_names, week=None, year=None)
+    # Value engine — match your repo's signature:
+    # compute_values(salary_df, players_map, starters_by_franchise, franchise_names, week=None, year=None)
     values_out: Dict[str, Any] = compute_values(
         salaries_df,
         players_map,
@@ -284,7 +282,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     top_busts = values_out.get("top_busts", [])
     team_efficiency = values_out.get("team_efficiency", [])
 
-    # Optional pools/lines (if present in week_data)
+    # Optional pools/lines
     pool_nfl = week_data.get("pool_nfl") or {}
     survivor_pool = week_data.get("survivor_pool") or {}
     lines = week_data.get("lines") or week_data.get("odds") or []
@@ -306,7 +304,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "roasts": [],
     }
 
-    # Debug dump to help with template issues
+    # Debug dump
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -314,25 +312,28 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     except Exception:
         pass
 
-    # Render newsletter
-    templates_dir = str(Path(__file__).parent / "templates")
-    outputs = render_newsletter(
-        payload,
-        templates_dir=templates_dir,
-        out_dir=str(out_dir),
-        make_html=bool(args.make_html),
-    )
+    # Render newsletter (match your actual signature)
+    outputs_dict = render_newsletter(payload, output_dir=str(out_dir), week=week)
 
-    # Ensure CI has something to upload
-    if isinstance(outputs, (list, tuple)) and outputs:
-        for p in outputs:
-            print(f"Wrote: {p}")
-        return tuple(Path(p) for p in outputs)  # type: ignore[return-value]
-    else:
-        stub_md = out_dir / f"week_{_week_label(week)}.md"
-        stub_md.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
-        print(f"Wrote: {stub_md}")
-        return (stub_md,)
+    # Make CI happy with Paths to upload
+    md_path = outputs_dict.get("md_path")
+    html_path = outputs_dict.get("html_path")
+    paths: List[Path] = []
+    if md_path:
+        print(f"Wrote: {md_path}")
+        paths.append(Path(md_path))
+    if html_path:
+        print(f"Wrote: {html_path}")
+        paths.append(Path(html_path))
+
+    if paths:
+        return tuple(paths)  # type: ignore[return-value]
+
+    # Fallback stub if nothing was produced
+    stub_md = out_dir / f"week_{_week_label(week)}.md"
+    stub_md.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
+    print(f"Wrote: {stub_md}")
+    return (stub_md,)
 
 
 if __name__ == "__main__":
