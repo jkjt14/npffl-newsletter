@@ -340,6 +340,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "starters_by_franchise": starters_by_franchise,  # for Fantasy Jail
         # pools
         "confidence_top3": conf3,
+        "team_prob": team_prob,
         "confidence_summary": conf_summary,
         "confidence_meta": {"no_picks": conf_no},
         "survivor_list": survivor_list,
