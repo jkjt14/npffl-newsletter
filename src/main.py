@@ -215,7 +215,18 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Instantiate client
+# Instantiate client (tolerate different constructor signatures)
+try:
     client = MFLClient(league_id=league_id, year=year, tz=tz)
+except TypeError:
+    try:
+        client = MFLClient(league_id=league_id, year=year, timezone=tz)
+    except TypeError:
+        client = MFLClient(league_id=league_id, year=year)
+        # expose tz on the instance for any downstream code that expects it
+        setattr(client, "tz", tz)
+        setattr(client, "timezone", tz)
+
 
     # Pull everything for the requested week
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
