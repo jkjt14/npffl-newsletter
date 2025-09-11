@@ -98,10 +98,7 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 if not side:
                     continue
                 # side may be list or single dict
-                if isinstance(side, list):
-                    side_list = side
-                else:
-                    side_list = [side]
+                side_list = side if isinstance(side, list) else [side]
                 for s in side_list:
                     fid = str(s.get("id") or s.get("franchise_id") or "").zfill(4)
                     pts = _safe_float(s.get("score") or s.get("points") or 0)
@@ -214,19 +211,16 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Instantiate client
-# Instantiate client (tolerate different constructor signatures)
-try:
-    client = MFLClient(league_id=league_id, year=year, tz=tz)
-except TypeError:
+    # Instantiate client (tolerate different constructor signatures)
     try:
-        client = MFLClient(league_id=league_id, year=year, timezone=tz)
+        client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
-        client = MFLClient(league_id=league_id, year=year)
-        # expose tz on the instance for any downstream code that expects it
-        setattr(client, "tz", tz)
-        setattr(client, "timezone", tz)
-
+        try:
+            client = MFLClient(league_id=league_id, year=year, timezone=tz)
+        except TypeError:
+            client = MFLClient(league_id=league_id, year=year)
+            setattr(client, "tz", tz)
+            setattr(client, "timezone", tz)
 
     # Pull everything for the requested week
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
