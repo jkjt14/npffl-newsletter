@@ -106,21 +106,20 @@ def _resolve_required_salaries_glob(cfg: Dict[str, Any]) -> str:
 
 def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
     """
-    Prefer the prebuilt rows from fetch_week (leagueStandings).
-    Fallback to synthesizing *week-only* PF from weeklyResults when needed.
-    Supports both shapes:
+    Prefer prebuilt rows from fetch_week (leagueStandings).
+    Fallback to week-only PF from weeklyResults when needed.
+    Supports:
       - weeklyResults.matchup[].franchise[]
-      - weeklyResults.franchise[]   (root-level franchise list)
+      - weeklyResults.franchise[] (root-level)
     """
     rows = week_data.get("standings_rows")
     if isinstance(rows, list) and all(isinstance(r, dict) for r in rows) and rows:
         return rows
 
     rows = []
-
-    # Fallback A: from weeklyResults.matchup[].franchise[]
     wr = week_data.get("weekly_results") or {}
     wrn = wr.get("weeklyResults") if isinstance(wr, dict) else {}
+    # A: matchup franchises
     matchups = (wrn or {}).get("matchup")
     if isinstance(matchups, dict):
         matchups = [matchups]
@@ -137,7 +136,7 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
         for fid, pf in pf_map.items():
             rows.append({"id": fid, "name": f_map.get(fid, f"Team {fid}"), "pf": pf, "vp": 0.0})
 
-    # Fallback B: from weeklyResults.franchise[] (root-level)
+    # B: root-level weeklyResults.franchise[]
     if not rows:
         franchises = (wrn or {}).get("franchise") or []
         if isinstance(franchises, dict):
@@ -153,18 +152,20 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
 
 
 # ----------------------
-# Starters extraction for value engine
+# Starters extraction (now enriched from players_map)
 # ----------------------
 
 def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     """
     Produce: { franchise_id: [ {player_id, player, pos, team, pts}, ... ] }
+
     Supports:
       - weeklyResults.matchup[].franchise[].players.player[] or .player[]
-      - weeklyResults.matchup[].player[] (matchup-level table)
-      - weeklyResults.player[] (global table)
-      - weeklyResults.franchise[] (root-level franchise list)  ← your Week 1
-        * uses franchise.player[] for pts and franchise.starters (CSV of ids)
+      - weeklyResults.matchup[].player[] (matchup-level)
+      - weeklyResults.player[] (global)
+      - weeklyResults.franchise[] (root-level) ← your Week 1 payload
+
+    NEW: If weeklyResults lacks name/pos/team, we backfill from players_map.
     """
     out: Dict[str, List[Dict[str, Any]]] = {}
     wr = week_data.get("weekly_results") or {}
@@ -172,7 +173,24 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
     if not isinstance(wrn, dict):
         return out
 
-    # Index GLOBAL players if present
+    # players_map for enrichment
+    players_map: Dict[str, Dict[str, str]] = week_data.get("players_map") or {}
+
+    def enrich(pid: str, meta: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure name/pos/team exist by merging from players_map."""
+        pm = players_map.get(pid, {})
+        name = (meta.get("name") or pm.get("first_last") or pm.get("raw") or "").strip()
+        pos = (meta.get("pos") or pm.get("pos") or "").strip()
+        team = (meta.get("team") or pm.get("team") or None)
+        return {
+            "player_id": pid,
+            "player": name,
+            "pos": pos,
+            "team": team,
+            "pts": _safe_float(meta.get("pts"), 0.0),
+        }
+
+    # Global player table (rare)
     global_players = wrn.get("player") or []
     if isinstance(global_players, dict):
         global_players = [global_players]
@@ -194,7 +212,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
         matchups = [matchups]
     if isinstance(matchups, list) and matchups:
         for m in matchups:
-            # Matchup-level index
+            # matchup index
             match_players = m.get("player") or []
             if isinstance(match_players, dict):
                 match_players = [match_players]
@@ -216,7 +234,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
             for fr in franchises:
                 fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
 
-                # Franchise-level index
+                # franchise player index
                 f_pl = fr.get("players") or fr.get("player") or []
                 if isinstance(f_pl, dict):
                     f_pl = f_pl.get("player") or f_pl
@@ -239,13 +257,12 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                 if isinstance(starters, str) and starters.strip():
                     for pid in [t.strip() for t in starters.split(",") if t.strip()]:
                         meta = fp_idx.get(pid) or mp_idx.get(pid) or gp_idx.get(pid) or {}
-                        rows.append({
-                            "player_id": pid,
-                            "player": str(meta.get("name") or "").strip(),
-                            "pos": str(meta.get("pos") or "").strip(),
+                        rows.append(enrich(pid, {
+                            "pts": meta.get("pts"),
+                            "name": meta.get("name"),
+                            "pos": meta.get("pos"),
                             "team": meta.get("team"),
-                            "pts": _safe_float(meta.get("pts"), 0.0),
-                        })
+                        }))
                 if not rows:
                     score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
                     rows.append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
@@ -254,7 +271,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
 
         return out
 
-    # Path 2: root-level weeklyResults.franchise[]  ← your Week 1 payload
+    # Path 2: root-level weeklyResults.franchise[]  ← Week 1 payload
     franchises = wrn.get("franchise") or []
     if isinstance(franchises, dict):
         franchises = [franchises]
@@ -262,7 +279,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
         for fr in franchises:
             fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
 
-            # Franchise-level player index (id -> pts/name/pos/team if present)
+            # franchise-level player index (id -> pts/name/pos/team if present)
             f_pl = fr.get("players") or fr.get("player") or []
             if isinstance(f_pl, dict):
                 f_pl = f_pl.get("player") or f_pl
@@ -275,7 +292,7 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                     continue
                 fp_idx[pid] = {
                     "pts": _safe_float(p.get("score") or p.get("points") or 0.0),
-                    "name": str(p.get("name") or "").strip(),
+                    "name": str(p.get("name") or "").strip(),   # usually missing
                     "pos": str(p.get("position") or p.get("pos") or "").strip(),
                     "team": (str(p.get("team") or "").strip() or None),
                 }
@@ -285,20 +302,21 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
             if isinstance(starters, str) and starters.strip():
                 for pid in [t.strip() for t in starters.split(",") if t.strip()]:
                     meta = fp_idx.get(pid) or gp_idx.get(pid) or {}
-                    rows.append({
-                        "player_id": pid,
-                        "player": str(meta.get("name") or "").strip(),
-                        "pos": str(meta.get("pos") or "").strip(),
+                    rows.append(enrich(pid, {
+                        "pts": meta.get("pts"),
+                        "name": meta.get("name"),
+                        "pos": meta.get("pos"),
                         "team": meta.get("team"),
-                        "pts": _safe_float(meta.get("pts"), 0.0),
-                    })
-
+                    }))
             if not rows:
                 score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
                 rows.append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
 
             out.setdefault(fid, []).extend(rows)
 
+    # simple visibility log
+    total_rows = sum(len(v) for v in out.values())
+    print(f"[starters] franchises={len(out)} rows={total_rows}")
     return out
 
 
@@ -327,7 +345,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     out_dir = Path(cfg_out_dir or args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # MFL client tolerant ctor
     try:
         client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
@@ -338,28 +355,24 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
             setattr(client, "tz", tz)
             setattr(client, "timezone", tz)
 
-    # Fetch
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
 
-    # Franchise names
     f_names = _merge_franchise_names(
         week_data.get("franchise_names"),
         getattr(client, "franchise_names", None),
         cfg.get("franchise_names"),
     )
 
-    # Standings + starters
     standings_rows = _build_standings_rows(week_data, f_names)
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
-    # Players directory (id -> name/pos/team) for value engine join
     players_map = week_data.get("players_map") or week_data.get("players") or {}
 
     # Salaries are REQUIRED
     salary_glob = _resolve_required_salaries_glob(cfg)
     salaries_df = load_salary_file(salary_glob)
 
-    # Compute values/busts/efficiency (argument order matches your working run)
+    # Compute values/busts/efficiency — this is the ordering that worked before
     values_out: Dict[str, Any] = compute_values(
         salaries_df,
         players_map,
@@ -394,7 +407,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "roasts": [],
     }
 
-    # Log issues but don't hard-fail (so artifacts always upload)
+    # Log issues but don't hard-fail
     problems = []
     if not standings_rows:
         problems.append("standings_rows is empty (derived from weeklyResults if possible)")
@@ -402,7 +415,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         problems.append("starters_by_franchise is empty (no weeklyResults starters parsed)")
     if not (top_values or top_busts or team_efficiency):
         problems.append("no value metrics (likely starters/salaries mismatch)")
-
     if problems:
         print("[sanity] Week", week, "notes:")
         for p in problems:
@@ -411,7 +423,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         print("[sanity] week_data keys:", wk_keys)
         print("[sanity] proceeding to write outputs anyway for debugging…")
 
-    # Debug context
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -419,7 +430,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     except Exception:
         pass
 
-    # Render newsletter
     outputs_dict = render_newsletter(payload, output_dir=str(out_dir), week=week)
     md_path = outputs_dict.get("md_path")
     html_path = outputs_dict.get("html_path")
@@ -434,7 +444,6 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     if paths:
         return tuple(paths)  # type: ignore[return-value]
 
-    # Ensure CI has something to upload
     stub_md = out_dir / f"week_{_week_label(week)}.md"
     stub_md.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
     print(f"Wrote: {stub_md}")
