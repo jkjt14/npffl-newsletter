@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List
 import requests
 
@@ -10,6 +12,7 @@ def _get_api_key() -> str:
 
 
 def _host() -> str:
+    # Your league uses www46; allow override via env if needed.
     return os.environ.get("MFL_HOST", "www46.myfantasyleague.com")
 
 
@@ -43,11 +46,10 @@ def _last_first_from_fl(fl: str) -> str:
     return fl
 
 
-# -----------------------------
-# MFL endpoints
-# -----------------------------
-
 def _players_directory(year: int, league_id: str) -> Dict[str, Dict[str, str]]:
+    """
+    Canonical players directory (names/pos/team) so we can enrich weekly data.
+    """
     url = f"{_base_url(year)}/export"
     params = {"TYPE": "players", "L": str(league_id), "DETAILS": 1}
     apikey = _get_api_key()
@@ -108,94 +110,30 @@ def _survivor(year: int, league_id: str) -> Dict[str, Any]:
     return _get_json(url, params)
 
 
-# -----------------------------
-# Normalization (optional)
-# -----------------------------
-
-def _key_for_matchup(m: Dict[str, Any]) -> str:
-    f = m.get("franchise") or []
-    if isinstance(f, dict):
-        f = [f]
-    ids = [str(x.get("id") or x.get("franchise_id") or "").zfill(4) for x in f]
-    return ",".join(sorted(ids))
-
-
-def _normalize_from_weekly_results(wr_json: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Produce a matchups list compatible with main.py’s 'normalized' path,
-    using only weeklyResults (no liveScoring).
-    """
-    wrn = (wr_json or {}).get("weeklyResults") or {}
-    mlist = wrn.get("matchup") or []
-    if isinstance(mlist, dict):
-        mlist = [mlist]
-
-    out: List[Dict[str, Any]] = []
-    for m in mlist:
-        frs = m.get("franchise") or []
-        if isinstance(frs, dict):
-            frs = [frs]
-
-        # collect franchise-level players if present
-        norm_frs = []
-        for fr in frs:
-            fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
-            score = fr.get("score") or fr.get("pf") or fr.get("points") or 0.0
-
-            # try to lift players if franchise node has them
-            f_pl = fr.get("players") or fr.get("player") or []
-            if isinstance(f_pl, dict):
-                f_pl = f_pl.get("player") or f_pl
-            if isinstance(f_pl, dict):
-                f_pl = [f_pl]
-            players = []
-            for p in f_pl or []:
-                players.append({
-                    "id": str(p.get("id") or "").strip(),
-                    "name": (p.get("name") or "").strip(),
-                    "position": (p.get("position") or p.get("pos") or "").strip(),
-                    "team": (p.get("team") or "").strip(),
-                    "score": float(p.get("score") or p.get("points") or 0.0),
-                })
-
-            norm_frs.append({
-                "id": fid,
-                "score": score,
-                "players": {"player": players} if players else {},
-            })
-
-        out.append({"franchise": norm_frs})
-    return out
-
-
-# -----------------------------
-# Entry point
-# -----------------------------
-
 def fetch_week_data(client, week: int) -> Dict[str, Any]:
     year = getattr(client, "year", None)
     league_id = getattr(client, "league_id", None)
     if not year or not league_id:
         raise ValueError("fetch_week_data: client must expose .year and .league_id")
 
-    weekly_results_raw = _weekly_results(year, league_id, week)   # RAW weeklyResults JSON
+    # Pull core payloads
+    weekly_results = _weekly_results(year, league_id, week)   # RAW weeklyResults JSON
     standings_json = _standings(year, league_id)
     pool_nfl = _pool(year, league_id)
     survivor_pool = _survivor(year, league_id)
     players_dir = _players_directory(year, league_id)
 
+    # Dump raw weeklyResults for debugging so we can tailor the extractor
     try:
-    from pathlib import Path
-    out_dir = Path(os.environ.get("NPFFL_OUTDIR", "build"))
-    out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / f"wr_week_{int(week):02d}.json").write_text(
-        json.dumps(weekly_results_raw, indent=2), encoding="utf-8"
-    )
-    print(f"[fetch_week] dumped raw weeklyResults -> {out_dir}/wr_week_{int(week):02d}.json")
-except Exception as e:
-    print(f"[fetch_week] failed to dump weeklyResults: {e}")
+        out_dir = Path(os.environ.get("NPFFL_OUTDIR", "build"))
+        out_dir.mkdir(parents=True, exist_ok=True)
+        dump_path = out_dir / f"wr_week_{int(week):02d}.json"
+        dump_path.write_text(json.dumps(weekly_results, indent=2), encoding="utf-8")
+        print(f"[fetch_week] dumped raw weeklyResults -> {dump_path}")
+    except Exception as e:
+        print(f"[fetch_week] failed to dump weeklyResults: {e}")
 
-    # Franchise names + simple standings table
+    # Franchise name map + quick standings rows
     fmap: Dict[str, str] = {}
     standings_rows: List[Dict[str, Any]] = []
     ls = (standings_json or {}).get("leagueStandings")
@@ -207,26 +145,21 @@ except Exception as e:
             fid = str(fr.get("id") or "").strip()
             nm = (fr.get("name") or fr.get("fname") or fid).strip()
             fmap[fid] = nm
-            pf = float(fr.get("pf") or 0.0)
-            vp = float(fr.get("vp") or 0.0)
+            try:
+                pf = float(fr.get("pf") or 0.0)
+            except Exception:
+                pf = 0.0
+            try:
+                vp = float(fr.get("vp") or 0.0)
+            except Exception:
+                vp = 0.0
             standings_rows.append({"id": fid, "name": nm, "pf": pf, "vp": vp})
 
-    # Build a best-effort normalized view from weeklyResults only (may lack per-player)
-    normalized_matchups = _normalize_from_weekly_results(weekly_results_raw)
-
-    # Debug
-    num_matchups = len(normalized_matchups)
-    num_players = sum(len((fr.get("players") or {}).get("player") or [])
-                      for m in normalized_matchups for fr in (m.get("franchise") or []))
     print(f"[fetch_week] players_dir size: {len(players_dir)}")
-    print(f"[fetch_week] matchups: {num_matchups}, per-player rows: {num_players}")
 
     return {
-        # IMPORTANT: expose BOTH normalized and RAW weeklyResults so main.py can fall back
-        "weekly_results": {
-            "matchups": normalized_matchups,
-            "weeklyResults": weekly_results_raw.get("weeklyResults") or {}
-        },
+        # Keep the RAW weeklyResults so main.py can parse your shard’s exact shape.
+        "weekly_results": weekly_results,
         "standings_rows": standings_rows,
         "pool_nfl": pool_nfl,
         "survivor_pool": survivor_pool,
