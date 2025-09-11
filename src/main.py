@@ -184,10 +184,19 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
 # CLI + Main
 # ----------------------
 
+def _int_or_none(s: str | None) -> int | None:
+    """Convert '', '  ', None -> None; otherwise int(s)."""
+    if s is None:
+        return None
+    s = str(s).strip()
+    if s == "":
+        return None
+    return int(s)
+
 def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="NPFFL Weekly Roast generator")
     ap.add_argument("--config", default=os.environ.get("NPFFL_CONFIG", "config.yaml"))
-    ap.add_argument("--week", type=int, default=None)
+    ap.add_argument("--week", type=_int_or_none, default=None)  # tolerant of empty string
     ap.add_argument("--out-dir", default=os.environ.get("NPFFL_OUTDIR", "build"))
     ap.add_argument("--make-html", action="store_true", default=True)
     return ap.parse_args()
