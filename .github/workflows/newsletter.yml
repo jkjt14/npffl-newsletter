@@ -8,8 +8,7 @@ on:
         required: false
         default: ""
   schedule:
-    # Tuesday 12:00 PM ET during EDT (16:00 UTC). Adjust after DST.
-    - cron: "0 16 * * 2"
+    - cron: "0 16 * * 2"  # Tuesday 12:00 PM ET (EDT). Change to 17:00 after DST.
 
 jobs:
   build-newsletter:
@@ -25,7 +24,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
       - name: Install deps
         run: |
@@ -49,11 +47,13 @@ jobs:
           echo "THE_ODDS_API_KEY=${THE_ODDS_API_KEY}" >> "$GITHUB_ENV"
 
       - name: Run newsletter
+        continue-on-error: true
         env:
           WEEK: ${{ github.event.inputs.week }}
         run: |
           set -euo pipefail
           mkdir -p build
+          # forward out-dir, optional week
           ARGS=( --out-dir build )
           if [[ -n "${WEEK:-}" ]]; then
             ARGS+=( --week "$WEEK" )
@@ -63,34 +63,31 @@ jobs:
           ls -lah build || true
 
       - name: Discover week label
+        if: always()
         run: |
           set -euo pipefail
           WEEK_IN="${{ github.event.inputs.week }}"
-          if [[ -n "$WEEK_IN" ]]; then
+          if [ -n "$WEEK_IN" ]; then
             WLBL=$(printf "%02d" "$WEEK_IN")
           else
             F=$(ls -1 build/NPFFL_Week_*.md 2>/dev/null | sort | tail -n1 || true)
-            if [[ -n "$F" ]]; then
+            if [ -n "$F" ]; then
               WLBL=$(basename "$F" | sed -E 's/NPFFL_Week_([0-9]{2}).*/\1/')
             else
-              F2=$(ls -1 build/week_*.md 2>/dev/null | sort | tail -n1 || true)
-              if [[ -n "$F2" ]]; then
-                WLBL=$(basename "$F2" | sed -E 's/week_([0-9]{2}).*/\1/')
-              else
-                WLBL="unknown"
-              fi
+              WLBL="unknown"
             fi
           fi
           echo "WEEK_LABEL=$WLBL" >> "$GITHUB_ENV"
           echo "[artifact] WEEK_LABEL=$WLBL"
 
       - name: Upload newsletter artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: NPFFL_Week_${{ env.WEEK_LABEL }}
           path: |
             build/*.md
             build/*.html
-            build/context_week_*.json
+            build/*.json
           if-no-files-found: warn
           retention-days: 30
