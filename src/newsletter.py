@@ -3,6 +3,7 @@ import html
 from pathlib import Path
 from typing import Any, Dict, List
 
+# Markdown rendering (with graceful fallback)
 try:
     import markdown as _md
     def _render_markdown(md_text: str) -> str:
@@ -24,10 +25,15 @@ def _mini_table(headers: List[str], rows: List[List[str]]) -> str:
     lines.append("")
     return "\n".join(lines)
 
-def _banners_cell(name: str, fid: str, banners_dir: str) -> str:
-    from pathlib import Path
-    p = Path(banners_dir) / f"{fid}.png"
-    return f"![{name}]({banners_dir}/{fid}.png)" if p.exists() else name
+def _franchise_img_cell(fid: str, alt_text: str, dirpath: str) -> str:
+    # Look for PNG/JPG by id: 0001.png / 0001.jpg under assets/franchises
+    p_png = Path(dirpath) / f"{fid}.png"
+    p_jpg = Path(dirpath) / f"{fid}.jpg"
+    if p_png.exists():
+        return f"![{alt_text}]({dirpath}/{fid}.png)"
+    if p_jpg.exists():
+        return f"![{alt_text}]({dirpath}/{fid}.jpg)"
+    return alt_text  # fallback to name if no image is found
 
 def _mk_md(payload: Dict[str, Any]) -> str:
     title = payload.get("title", "NPFFL Weekly Newsletter")
@@ -48,7 +54,9 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     conf_no = (payload.get("confidence_meta") or {}).get("no_picks", [])
     surv = payload.get("survivor_list") or []
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
-    banners_dir = (payload.get("assets") or {}).get("banners_dir", "assets/banners")
+
+    # Use your franchise banners folder
+    logos_dir = (payload.get("assets") or {}).get("banners_dir") or "assets/franchises"
 
     from . import roastbook as rb
 
@@ -69,22 +77,25 @@ def _mk_md(payload: Dict[str, Any]) -> str:
         out.append("## Headliners")
         out.append(rb.headliners_blurb(headliners) + "\n")
 
-    # 4) Values / Busts (story)
+    # 4) Values / Busts (team story)
     out.append("## Value vs. Busts")
     out.append(rb.values_blurb(values))
     out.append(rb.busts_blurb(busts) + "\n")
 
-    # 5) Power Vibes (Season) — slim table + short explainer
+    # 5) Power Vibes (Season) — slim table + short explainer + **logos**
     out.append("## Power Vibes (Season-to-Date)")
-    out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheets required; just proof on the board.\n")
+    out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.\n")
     out.append(rb.power_vibes_blurb(season_rank) + "\n")
     if season_rank:
         headers = ["#", "Team", "Pts (YTD)", "Avg"]
         rows = []
         for r in season_rank:
+            fid = str(r["id"]).zfill(4)
+            # Render the logo (no team name text)
+            logo_md = _franchise_img_cell(fid, r["team"], logos_dir)
             rows.append([
                 str(r["rank"]),
-                _banners_cell(r["team"], r["id"], banners_dir),
+                logo_md,
                 _fmt2(r["pts_sum"]),
                 _fmt2(r["avg"]),
             ])
@@ -111,7 +122,11 @@ def _mk_md(payload: Dict[str, Any]) -> str:
 
 def render_newsletter(payload: Dict[str, Any], output_dir: str, week: int) -> Dict[str, str]:
     md_text = _mk_md(payload) or "# NPFFL Weekly Newsletter\n\n_No content._"
-    html_body = _render_markdown(md_text)
+    try:
+        import markdown as _md
+        html_body = _md.markdown(md_text, extensions=["tables"])
+    except Exception:
+        html_body = "<p>" + md_text.replace("\n", "<br/>") + "</p>"
     html_doc = f"""<!doctype html><html lang="en"><head>
 <meta charset="utf-8"/><title>{html.escape(payload.get('title','NPFFL Weekly Newsletter'))} — Week {html.escape(payload.get('week_label','00'))}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -125,7 +140,7 @@ h2{{margin-top:2rem}}
 table{{width:100%;border-collapse:collapse;margin:.75rem 0 1.25rem}}
 th,td{{padding:.5rem .6rem;border-bottom:1px solid var(--line);vertical-align:middle}}
 thead th{{text-align:left}}
-img{{max-height:26px;vertical-align:middle}}
+img{{max-height:28px;vertical-align:middle}}
 .footer{{margin-top:2rem;color:var(--muted);font-size:.95rem}}
 a{{color:var(--accent);text-decoration:none}}a:hover{{text-decoration:underline}}
 </style></head>
