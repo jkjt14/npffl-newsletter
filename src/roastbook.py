@@ -53,7 +53,7 @@ def weekly_results_blurb(scores: Dict[str, Any]) -> str:
 
     pb = ProseBuilder()
     lead  = pb.sentence(f"**{top_team}** set the pace at **{_fmt2(top_pts)}** while **{bot_team}** limped home at **{_fmt2(bot_pts)}**")
-    mid   = pb.sentence(f"{chasers} stayed in shouting distance as the middle jammed up")
+    mid   = pb.sentence(f"{chasers} stayed within shouting distance as the middle jammed up")
     chaos = pb.sentence(f"The heart of the slate lived between **{band_low}–{band_high}** — every slot mattered")
     return pb.paragraph(lead, mid, chaos)
 
@@ -88,7 +88,6 @@ _HEAD_TEMPLATES = [
 ]
 
 def headliners_blurb(rows: List[Dict[str, Any]]) -> str:
-    """Turn top player outputs into team stories with phrasing variety."""
     if not rows: return ""
     team_plays: Dict[str, List[str]] = {}
     for h in rows[:10]:
@@ -105,7 +104,6 @@ def headliners_blurb(rows: List[Dict[str, Any]]) -> str:
     ordered = sorted(team_plays.items(), key=lambda kv: -len(kv[1]))[:4]
     pb = ProseBuilder()
     for team, plays in ordered:
-        # Use unique players per team line
         uniq = []
         seen = set()
         for p in plays:
@@ -138,9 +136,6 @@ _BUST_OPENERS = [
 ]
 
 def _team_support_blurb(rows: List[Dict[str, Any]], cap_players: int = 2) -> List[Tuple[str, str]]:
-    """
-    Aggregate by team. Return [(team, 'P1, P2'), ...] sorted by count desc then alpha.
-    """
     team_to_players: Dict[str, List[str]] = defaultdict(list)
     team_counts: Counter = Counter()
     for r in rows:
@@ -213,7 +208,7 @@ def power_vibes_blurb(season_rows: List[Dict[str, Any]]) -> str:
     return pb.paragraph(*lines)
 
 # ----------------------------
-# Confidence (odds-driven narrative, no lists)
+# Confidence (odds-driven narrative + emojis)
 # ----------------------------
 
 def _bold_score(rank: int, prob: float) -> float:
@@ -226,11 +221,8 @@ def _bold_score(rank: int, prob: float) -> float:
 def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], no_picks: List[str]) -> str:
     if not conf3 and not no_picks:
         return "No Confidence cards this week."
-    # Score teams and also surface a single “Upset Ticket”
     teams = []
     upset_pick = None  # (team, code, prob, rank)
-    chalk_team = None  # team with highest sum(prob*rank)
-    best_bold, best_safe = -1.0, -1.0
     safe_scores: Dict[str, float] = {}
 
     for row in conf3:
@@ -240,7 +232,6 @@ def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], n
             r = int(g.get("rank", 0))
             code = str(g.get("pick","")).upper()
             p = float(team_prob.get(code, 0.5))
-            # Track upset candidate (lowest prob with rank weight)
             w = _bold_score(r, p)
             if upset_pick is None or (w > 0 and p < (upset_pick[2] if upset_pick else 1.0)):
                 upset_pick = (t, code, p, r)
@@ -249,24 +240,25 @@ def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], n
         teams.append((t, bold, safe))
         safe_scores[t] = safe
 
-    out: List[str] = []
+    parts: List[str] = []
     if teams:
         teams.sort(key=lambda x: (-x[1], x[2], x[0]))
         bold_names = [t for t,_,_ in teams if teams[0][1] > 0][:3]
         if bold_names:
-            out.append(f"**Bold Board:** {', '.join(bold_names)} pushed underdogs into top slots and meant it.")
+            parts.append(f"🔥 **Bold Board:** {', '.join(bold_names)} pushed live dogs into top slots.")
+        # Chalkiest overall
         chalk_team = max(safe_scores.items(), key=lambda kv: kv[1])[0] if safe_scores else None
         if chalk_team:
-            out.append(f"**Chalk Fortress:** {chalk_team} stacked heavy favorites and slept just fine.")
+            parts.append(f"🧊 **Chalk Fortress:** {chalk_team} stacked heavy favorites and slept fine.")
     if upset_pick:
         t, code, p, r = upset_pick
-        out.append(f"**Upset Ticket of the Week:** {t} slapped a rank-{r} on {code} ({int(round((1-p)*100))}% sweat) and got paid.")
+        parts.append(f"🎯 **Upset Ticket of the Week:** {t} hit {code} at rank {r}, beating a {int(round((1-p)*100))}% ‘nope’ from Vegas.")
     if no_picks:
-        out.append(f"**Ghost Entries:** {', '.join(no_picks)} left their cards blank; excuses pending.")
-    return " ".join(out) if out else "Everything landed in the middle—no heroes, no villains."
+        parts.append(f"🟡 **Ghost Entries:** {', '.join(no_picks)} left cards blank; excuses pending.")
+    return " ".join(parts) if parts else "Everything landed in the middle—no heroes, no villains."
 
 # ----------------------------
-# Survivor (odds-driven narrative, no table)
+# Survivor (odds-driven narrative + emojis)
 # ----------------------------
 
 def survivor_story(surv: List[Dict[str, Any]], team_prob: Dict[str, float], no_picks: List[str]) -> str:
@@ -277,43 +269,17 @@ def survivor_story(surv: List[Dict[str, Any]], team_prob: Dict[str, float], no_p
         picks = [(r.get("team","Team"), str(r.get("pick","")).upper(), float(team_prob.get(str(r.get("pick","")).upper(), 0.5))) for r in surv if r.get("pick")]
         if picks:
             picks.sort(key=lambda x: x[2])  # lowest prob = boldest
+            # Spotlight top 2 upsets + one honorable mention
             bold = [f"{t} → {code}" for t,code,_ in picks[:2]]
             if len(picks) > 2:
                 bold.append(f"{picks[2][0]} → {picks[2][1]}")
-            pieces.append(f"**Boldest Lifelines:** {', '.join(bold)} — tightrope stuff, clean landing.")
+            pieces.append(f"🔥 **Boldest Lifelines:** {', '.join(bold)} — tightrope stuff, clean landing.")
             from collections import Counter
             codes = [c for _,c,_ in picks]
             common_code, _ = sorted(Counter(codes).items(), key=lambda x: (-x[1], x[0]))[0]
-            pieces.append(f"**Boring Consensus:** {common_code} — training wheels on, ride completed.")
+            # Use implied prob to color it
+            p = float(team_prob.get(common_code, 0.75))
+            pieces.append(f"🧊 **Boring Consensus:** {common_code} ({int(round(p*100))}% implied) — training wheels on, ride completed.")
     if no_picks:
-        pieces.append(f"**No-Show Column:** {', '.join(no_picks)} skipped the booth.")
+        pieces.append(f"🟡 **No-Show Column:** {', '.join(no_picks)} skipped the booth.")
     return " ".join(pieces)
-
-# ----------------------------
-# Rotating one-liners
-# ----------------------------
-
-def fraud_watch_blurb(eff: List[Dict[str, Any]]) -> str:
-    if not eff: return ""
-    rows = []
-    for r in eff:
-        pts = float(r.get("total_pts") or 0.0)
-        sal = float(r.get("total_sal") or 0.0)
-        ppk = (pts / (sal/1000)) if sal > 0 else 0.0
-        rows.append({"name": r.get("name",""), "pts": pts, "ppk": ppk})
-    if not rows: return ""
-    rows.sort(key=lambda x: (x["ppk"], -x["pts"]))  # worst efficiency first
-    f = rows[0]
-    return f"🔥 **Fraud Watch:** {f['name']} posted **{_fmt2(f['pts'])}** with efficiency that won’t pass audit."
-
-def fantasy_jail_blurb(starters: Dict[str, List[Dict[str, Any]]] | None, f_map: Dict[str,str] | None) -> str:
-    if not starters or not f_map: return ""
-    offenders = []
-    for fid, rows in starters.items():
-        zeroes = [r for r in rows if float(r.get("pts") or 0.0) == 0.0 and (r.get("player_id") or "") != ""]
-        if zeroes:
-            offenders.append((f_map.get(fid, fid), len(zeroes)))
-    if not offenders: return ""
-    offenders.sort(key=lambda t: -t[1])
-    name, cnt = offenders[0]
-    return f"🚔 **Fantasy Jail:** {name} started {cnt} goose-egg slot{'s' if cnt!=1 else ''}. Self-inflicted sweat."
