@@ -184,6 +184,17 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
     survivor_pool = _survivor(year, league_id)
     players_dir = _players_directory(year, league_id)
 
+    try:
+    from pathlib import Path
+    out_dir = Path(os.environ.get("NPFFL_OUTDIR", "build"))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / f"wr_week_{int(week):02d}.json").write_text(
+        json.dumps(weekly_results_raw, indent=2), encoding="utf-8"
+    )
+    print(f"[fetch_week] dumped raw weeklyResults -> {out_dir}/wr_week_{int(week):02d}.json")
+except Exception as e:
+    print(f"[fetch_week] failed to dump weeklyResults: {e}")
+
     # Franchise names + simple standings table
     fmap: Dict[str, str] = {}
     standings_rows: List[Dict[str, Any]] = []
