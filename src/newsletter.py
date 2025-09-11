@@ -38,8 +38,18 @@ def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
     except Exception:
         return alt_text
 
+def _clean_title(t: str) -> str:
+    """Force newsletter branding, remove any 'Roast' residue."""
+    t = (t or "").strip() or "NPFFL Weekly Newsletter"
+    # sanitize any existing config that still says "Roast"
+    t = t.replace("Roast", "Newsletter").replace("ROAST", "NEWSLETTER")
+    if "Newsletter" not in t:
+        t = "NPFFL Weekly Newsletter"
+    return t
+
 def _mk_md(payload: Dict[str, Any]) -> str:
-    title = payload.get("title", "NPFFL Weekly Newsletter")
+    raw_title = payload.get("title", "") or (payload.get("config", {}) or {}).get("title", "")
+    title = _clean_title(raw_title)
     week_label = payload.get("week_label", "00")
     week_num = int(str(week_label).lstrip("0") or "0") or payload.get("week", 0)
     tone_name = (payload.get("tone") or payload.get("config", {}).get("tone") or "spicy")
@@ -60,19 +70,22 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
     logos_dir = (payload.get("assets") or {}).get("banners_dir") or "assets/franchises"
 
+    # Feature flags (Around the League OFF by default this week)
+    features = payload.get("features") or {}
+    include_around_league = bool(features.get("around_league", False))
+
     from . import roastbook as rb
     tone = rb.Tone(tone_name)
 
     out: List[str] = []
-    # — Intro blurb (new)
+    # Intro blurb (new)
     out.append(f"# {title} — Week {week_label}\n")
-    out.append("> **New format!** Same DFS chaos, tighter recap, louder voice. This one’s late because the editor tried to stream ‘All-22’ from an airport lounge. We’ll be on time going forward — posting **every Tuesday at noon ET**.\n")
+    out.append("> **New format!** Same DFS chaos, tighter recap, louder voice. This one’s late because the editor tried to stream All-22 from an airport lounge. We’ll be on time going forward — posting **every Tuesday at noon ET**.\n")
 
-    # 1) Weekly Results  (intro → mini visual: Chalk&Leverage lines → roast)
+    # 1) Weekly Results  (intro → mini visual: Chalk&Leverage → roast)
     try:
         out.append("## Weekly Results")
         out.append(rb.weekly_results_blurb(scores, tone))
-        # Chalk & Leverage now lives here
         chlv = rb.chalk_leverage_blurb(starters_idx, tone)
         if chlv:
             out.append("")
@@ -83,7 +96,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Weekly Results unavailable._")
 
-    # 2) VP Drama  (intro → roast)
+    # 2) VP Drama
     try:
         if payload.get("vp_drama"):
             out.append("## VP Drama")
@@ -94,7 +107,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_VP Drama unavailable._")
 
-    # 3) Headliners  (intro → roast)
+    # 3) Headliners
     try:
         if headliners:
             out.append("## Headliners")
@@ -105,7 +118,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Headliners unavailable._")
 
-    # 4) Value vs. Busts  (intro → roast)
+    # 4) Value vs. Busts
     try:
         out.append("## Value vs. Busts")
         out.append(rb.values_blurb(values, tone))
@@ -116,7 +129,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Value vs. Busts unavailable._")
 
-    # 5) Power Vibes  (intro → mini visual: logos table → roast)
+    # 5) Power Vibes
     try:
         out.append("## Power Vibes (Season-to-Date)")
         out.append("We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.")
@@ -136,7 +149,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Power Vibes unavailable._")
 
-    # 6) Confidence  (intro → roast)
+    # 6) Confidence
     try:
         if conf3 or conf_no:
             out.append("## Confidence Pick’em")
@@ -147,7 +160,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Confidence section unavailable._")
 
-    # 7) Survivor  (intro → roast)
+    # 7) Survivor
     try:
         if surv or surv_no:
             out.append("## Survivor Pool")
@@ -158,20 +171,25 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     except Exception:
         out.append("_Survivor section unavailable._")
 
-    # 8) Around the League (unique one-liners; rotates weekly)
-    try:
-        lines = rb.around_the_league_lines(f_map, scores, week=week_num, tone=tone, n=7)
-        if lines:
-            out.append("## Around the League")
-            out.extend([f"- {ln}" for ln in lines])
-            out.append("")
-    except Exception:
-        out.append("_Around the League unavailable._")
+    # 8) Around the League — DISABLED for this issue (opt-in later via features.around_league: true)
+    if include_around_league:
+        try:
+            lines = rb.around_the_league_lines(f_map, scores, week=week_num, tone=tone, n=7)
+            if lines:
+                out.append("## Around the League")
+                out.extend([f"- {ln}" for ln in lines])
+                out.append("")
+        except Exception:
+            out.append("_Around the League unavailable._")
 
     return "\n".join(out)
 
 def render_newsletter(payload: Dict[str, Any], output_dir: str, week: int) -> Dict[str, str]:
     out = Path(output_dir); out.mkdir(parents=True, exist_ok=True)
+    title = _clean_title(payload.get("title") or (payload.get("config", {}) or {}).get("title", ""))
+    payload = dict(payload)  # don’t mutate caller
+    payload["title"] = title
+
     md_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.md"
     html_path = out / f"NPFFL_Week_{payload.get('week_label','00')}.html"
 
