@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import os
 import sys
-import glob
-import inspect
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import yaml
 
 from .mfl_client import MFLClient
-from .fetch_week import fetch_week_data           # returns a dict of week data
-from .load_salary import load_salary_file         # expects a path or glob string; returns a pandas DataFrame
-from .value_engine import compute_values          # signature varies by repo version
+from .fetch_week import fetch_week_data
+from .load_salary import load_salary_file
+from .value_engine import compute_values
 from .newsletter import render_newsletter
 
 
@@ -58,10 +57,6 @@ def _merge_franchise_names(*maps: Dict[str, str] | None) -> Dict[str, str]:
 # ----------------------
 
 def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
-    """
-    Normalize standings to rows: {id, name, pf, vp}
-    Accepts multiple source shapes from fetch_week payloads.
-    """
     rows: List[Dict[str, Any]] = []
 
     st = week_data.get("standings")
@@ -99,14 +94,8 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                     fid = str(s.get("id") or s.get("franchise_id") or "").zfill(4)
                     pts = _safe_float(s.get("score") or s.get("points") or 0)
                     pf_map[fid] = pf_map.get(fid, 0.0) + pts
-
         for fid, pf in pf_map.items():
-            rows.append({
-                "id": fid,
-                "name": f_map.get(fid, f"Team {fid}"),
-                "pf": pf,
-                "vp": 0.0,
-            })
+            rows.append({"id": fid, "name": f_map.get(fid, f"Team {fid}"), "pf": pf, "vp": 0.0})
 
     rows.sort(key=lambda r: (-_safe_float(r["pf"]), r["name"]))
     return rows
@@ -117,9 +106,6 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
 # ----------------------
 
 def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    { franchise_id: [ {player_id, player, pos, team, pts}, ... ] }
-    """
     result: Dict[str, List[Dict[str, Any]]] = {}
     wr = week_data.get("weekly_results") or {}
     matchups = wr.get("matchups") if isinstance(wr, dict) else wr
@@ -138,11 +124,9 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
             side_list = side if isinstance(side, list) else [side]
             for s in side_list:
                 fid = str(s.get("id") or s.get("franchise_id") or "").zfill(4)
-
                 starters = s.get("starters") or s.get("players") or []
                 if isinstance(starters, dict) and "player" in starters:
                     starters = starters["player"]
-
                 if isinstance(starters, list):
                     for p in starters:
                         row = {
@@ -158,72 +142,6 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
                     _add(fid, {"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
 
     return result
-
-
-# ----------------------
-# Adaptive value engine wiring
-# ----------------------
-
-def _build_players_map_from_sources(week_data: Dict[str, Any],
-                                    starters_by_franchise: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
-    """
-    Try to get players map from week_data, otherwise synthesize from starters.
-    Shape: { player_id: {"name":..., "pos":..., "team":...}, ... }
-    """
-    # Try common keys first
-    for key in ("players_map", "players", "player_map"):
-        pm = week_data.get(key)
-        if isinstance(pm, dict) and pm:
-            return pm
-
-    # Synthesize from starters
-    pm: Dict[str, Dict[str, Any]] = {}
-    for flist in starters_by_franchise.values():
-        for p in flist:
-            pid = str(p.get("player_id") or "").strip()
-            if not pid:
-                continue
-            pm.setdefault(pid, {
-                "name": p.get("player"),
-                "pos": p.get("pos"),
-                "team": p.get("team"),
-            })
-    return pm
-
-
-def _call_compute_values_adaptive(week_data: Dict[str, Any],
-                                  starters_by_franchise: Dict[str, List[Dict[str, Any]]],
-                                  franchise_names: Dict[str, str],
-                                  salaries_df) -> Dict[str, Any]:
-    """
-    Inspect compute_values() signature and call with arguments in the expected order.
-    Supports common historical variants.
-    """
-    params = list(inspect.signature(compute_values).parameters.keys())
-
-    players_map = _build_players_map_from_sources(week_data, starters_by_franchise)
-
-    # Map possible parameter names to the right objects
-    param_value_map: Dict[str, Any] = {}
-    for p in params:
-        pl = p.lower()
-        if pl in ("players_map", "players", "player_map", "pmap"):
-            param_value_map[p] = players_map
-        elif pl in ("starters_by_franchise", "starters", "starters_map", "sbf"):
-            param_value_map[p] = starters_by_franchise
-        elif pl in ("franchise_names", "franchises", "franchise_map", "f_names", "fname_map"):
-            param_value_map[p] = franchise_names
-        elif pl in ("salaries_df", "salaries", "salary_df", "salariesframe"):
-            param_value_map[p] = salaries_df
-        elif pl in ("week_data", "data", "context"):
-            param_value_map[p] = week_data
-        else:
-            # Unknown param: pass None (many implementations guard/ignore extras)
-            param_value_map[p] = None
-
-    # Build args in declared order
-    args_in_order = [param_value_map[p] for p in params]
-    return compute_values(*args_in_order)
 
 
 # ----------------------
@@ -248,34 +166,27 @@ def _cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
     return cur
 
 
-def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
+def _resolve_required_salaries_glob(cfg: Dict[str, Any]) -> str:
     """
-    Determine the salary file path or glob. Must match at least one file.
-    Resolution order:
-      1) config top-level: salaries_path / salaries_file / salary_file
-      2) config nested: inputs.salary_glob
-      3) env: SALARY_GLOB
-      4) defaults: data/salaries/*.xlsx, salaries/*.xlsx
+    Resolve a salary file glob that matches at least one file.
+    Prefers config inputs.salary_glob, then top-level keys, then sensible defaults.
     """
     candidates: List[str] = []
-
+    # config: nested first (your config.yaml uses this)
+    v = _cfg_get(cfg, "inputs.salary_glob")
+    if v:
+        candidates.append(str(v))
+    # config: top-level variants
     for k in ("salaries_path", "salaries_file", "salary_file"):
         v = cfg.get(k)
         if v:
             candidates.append(str(v))
-
-    v = _cfg_get(cfg, "inputs.salary_glob")
-    if v:
-        candidates.append(str(v))
-
+    # env override (optional)
     env_glob = os.environ.get("SALARY_GLOB")
     if env_glob:
         candidates.append(env_glob)
-
-    candidates.extend([
-        "data/salaries/*.xlsx",
-        "salaries/*.xlsx",
-    ])
+    # sensible defaults
+    candidates.extend(["data/salaries/*.xlsx", "salaries/*.xlsx"])
 
     tried: List[str] = []
     for pat in candidates:
@@ -283,8 +194,7 @@ def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
         if not pat:
             continue
         tried.append(pat)
-        matches = sorted(glob.glob(pat))
-        if matches:
+        if glob.glob(pat):
             return pat
 
     msg = [
@@ -295,15 +205,10 @@ def _resolve_required_salaries_path(cfg: Dict[str, Any]) -> str:
         msg.extend([f"  - {p}" for p in tried])
     else:
         msg.append("  - (no patterns to try)")
-
     msg.extend([
         "",
-        "Your config supports 'inputs.salary_glob' (e.g., inputs.salary_glob: data/salaries/*.xlsx).",
-        "How to fix:",
-        "  • Add one of these to config.yaml: salaries_path / salaries_file / salary_file,",
-        "    or set inputs.salary_glob: <glob>,",
-        "    or set env SALARY_GLOB with a valid glob.",
-        "  • Ensure the matching .xlsx file(s) are present in the repo or accessible to the runner.",
+        "Set inputs.salary_glob in config.yaml (e.g., data/salaries/2025_*_Salary.xlsx),",
+        "or set SALARY_GLOB env, or define salaries_path/salaries_file/salary_file.",
     ])
     print("\n".join(msg), file=sys.stderr)
     sys.exit(2)
@@ -327,12 +232,12 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     tz = cfg.get("timezone") or cfg.get("tz") or "America/New_York"
     week = args.week if args.week is not None else int(cfg.get("week") or 1)
 
-    # Prefer config output dir if provided; otherwise use CLI/env default
+    # Output dir: prefer config override if present
     cfg_out_dir = _cfg_get(cfg, "outputs.dir")
     out_dir = Path(cfg_out_dir or args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Instantiate client (tolerate different constructor signatures)
+    # Instantiate client (tolerate older/newer ctor signatures)
     try:
         client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
@@ -343,43 +248,45 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
             setattr(client, "tz", tz)
             setattr(client, "timezone", tz)
 
-    # Pull everything for the requested week
+    # Fetch all week data
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
 
-    # Franchise names, from any source we can get
+    # Franchise names
     f_names = _merge_franchise_names(
         week_data.get("franchise_names"),
         getattr(client, "franchise_names", None),
         cfg.get("franchise_names"),
     )
 
-    # Standings
+    # Standings + starters
     standings_rows = _build_standings_rows(week_data, f_names)
-
-    # Starters by franchise
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
-    # ---- REQUIRED salaries: resolve, validate, and load ----
-    salaries_pattern = _resolve_required_salaries_path(cfg)
-    salaries_df = load_salary_file(salaries_pattern)
+    # Players map for value engine (from fetch_week)
+    players_map = week_data.get("players_map") or week_data.get("players") or {}
 
-    # ---- Adaptive compute_values call ----
-    values_out: Dict[str, Any] = _call_compute_values_adaptive(
-        week_data=week_data,
-        starters_by_franchise=starters_by_franchise,
-        franchise_names=f_names,
-        salaries_df=salaries_df,
+    # REQUIRED salaries
+    salary_glob = _resolve_required_salaries_glob(cfg)
+    salaries_df = load_salary_file(salary_glob)
+
+    # ---- Call value engine with your repo's expected ordering ----
+    #   compute_values(salary_df, players_map, starters_by_franchise, franchise_names, week=None, year=None)
+    values_out: Dict[str, Any] = compute_values(
+        salaries_df,
+        players_map,
+        starters_by_franchise,
+        f_names,
+        week=week,
+        year=year,
     )
 
     top_values = values_out.get("top_values", [])
     top_busts = values_out.get("top_busts", [])
     team_efficiency = values_out.get("team_efficiency", [])
 
-    # Pools (optional)
+    # Optional pools/lines (if present in week_data)
     pool_nfl = week_data.get("pool_nfl") or {}
     survivor_pool = week_data.get("survivor_pool") or {}
-
-    # Lines (optional)
     lines = week_data.get("lines") or week_data.get("odds") or []
 
     payload: Dict[str, Any] = {
@@ -399,7 +306,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "roasts": [],
     }
 
-    # Debug dump
+    # Debug dump to help with template issues
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
