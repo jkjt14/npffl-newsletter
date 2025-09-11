@@ -3,7 +3,6 @@ import html
 from pathlib import Path
 from typing import Any, Dict, List
 
-# Markdown rendering (with graceful fallback)
 try:
     import markdown as _md
     def _render_markdown(md_text: str) -> str:
@@ -56,30 +55,31 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     out: List[str] = []
     out.append(f"# {title} — Week {week_label}\n")
 
-    # 1) Weekly Results (long, team-first)
+    # 1) Weekly Results
     out.append("## Weekly Results")
     out.append(rb.weekly_results_blurb(scores) + "\n")
 
-    # 2) VP Drama (top-5 vs 6th + bubble)
+    # 2) VP Drama
     if payload.get("vp_drama"):
         out.append("## VP Drama")
         out.append(rb.vp_drama_blurb(payload["vp_drama"]) + "\n")
 
-    # 3) Headliners (team-centric write-up)
+    # 3) Headliners (team-centric)
     if headliners:
         out.append("## Headliners")
         out.append(rb.headliners_blurb(headliners) + "\n")
 
-    # 4) Values / Busts (prose only)
+    # 4) Values / Busts (story)
     out.append("## Value vs. Busts")
     out.append(rb.values_blurb(values))
     out.append(rb.busts_blurb(busts) + "\n")
 
-    # 5) Power Vibes (Season) — single mini table allowed
+    # 5) Power Vibes (Season) — slim table + short explainer
     out.append("## Power Vibes (Season-to-Date)")
+    out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheets required; just proof on the board.\n")
     out.append(rb.power_vibes_blurb(season_rank) + "\n")
     if season_rank:
-        headers = ["#", "Team", "Pts (YTD)", "Avg", "Consistency (σ)", "Luck (Σ)", "Salary Burn"]
+        headers = ["#", "Team", "Pts (YTD)", "Avg"]
         rows = []
         for r in season_rank:
             rows.append([
@@ -87,28 +87,25 @@ def _mk_md(payload: Dict[str, Any]) -> str:
                 _banners_cell(r["team"], r["id"], banners_dir),
                 _fmt2(r["pts_sum"]),
                 _fmt2(r["avg"]),
-                _fmt2(r["stdev"]),
-                _fmt2(r["luck_sum"]),
-                f"{r['burn_rate_pct']:+.1f}%"
             ])
         out.append(_mini_table(headers, rows))
 
-    # 6) Confidence (odds-driven narrative; no bullets/tables)
+    # 6) Confidence (odds narrative; no lists)
     if conf3 or conf_no:
         out.append("## Confidence Pick’em")
         out.append(rb.confidence_story(conf3, team_prob, conf_no) + "\n")
 
-    # 7) Survivor (odds-driven narrative; no table)
+    # 7) Survivor (odds narrative; no table)
     if surv or surv_no:
         out.append("## Survivor Pool")
         out.append(rb.survivor_story(surv, team_prob, surv_no) + "\n")
 
-    # 8) Rotating one-liners
+    # 8) One-liners
     fw = rb.fraud_watch_blurb(eff)
     if fw: out.append(fw + "\n")
     jail = rb.fantasy_jail_blurb(starters_idx, f_map)
     if jail: out.append(jail + "\n")
-    # Standings section intentionally removed per user preference.
+    # Standings intentionally removed.
 
     return "\n".join(out)
 
