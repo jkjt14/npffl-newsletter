@@ -193,7 +193,7 @@ def _parse_args() -> argparse.Namespace:
     return ap.parse_args()
 
 
-def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[]:  # type: ignore[valid-type]
+def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     args = _parse_args()
     cfg = _read_config(args.config)
 
