@@ -1,5 +1,5 @@
 from __future__ import annotations
-import html
+import base64, mimetypes, html
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -25,15 +25,21 @@ def _mini_table(headers: List[str], rows: List[List[str]]) -> str:
     lines.append("")
     return "\n".join(lines)
 
-def _franchise_img_cell(fid: str, alt_text: str, dirpath: str) -> str:
-    # Look for PNG/JPG by id: 0001.png / 0001.jpg under assets/franchises
+def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
+    """Return an <img> tag with base64 data for 0002.(png|jpg) if found; else alt text."""
     p_png = Path(dirpath) / f"{fid}.png"
     p_jpg = Path(dirpath) / f"{fid}.jpg"
-    if p_png.exists():
-        return f"![{alt_text}]({dirpath}/{fid}.png)"
-    if p_jpg.exists():
-        return f"![{alt_text}]({dirpath}/{fid}.jpg)"
-    return alt_text  # fallback to name if no image is found
+    p = p_png if p_png.exists() else (p_jpg if p_jpg.exists() else None)
+    if not p:
+        return alt_text
+    mime, _ = mimetypes.guess_type(p.name)
+    mime = mime or ("image/png" if p.suffix.lower()==".png" else "image/jpeg")
+    try:
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        # Slightly taller than text for table readability
+        return f'<img src="data:{mime};base64,{b64}" alt="{html.escape(alt_text)}" style="height:26px;vertical-align:middle;border-radius:4px;" />'
+    except Exception:
+        return alt_text
 
 def _mk_md(payload: Dict[str, Any]) -> str:
     title = payload.get("title", "NPFFL Weekly Newsletter")
@@ -55,7 +61,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     surv = payload.get("survivor_list") or []
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
 
-    # Use your franchise banners folder
+    # Franchise logos folder (your screenshot shows assets/franchises/0002.png)
     logos_dir = (payload.get("assets") or {}).get("banners_dir") or "assets/franchises"
 
     from . import roastbook as rb
@@ -82,7 +88,7 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     out.append(rb.values_blurb(values))
     out.append(rb.busts_blurb(busts) + "\n")
 
-    # 5) Power Vibes (Season) — slim table + short explainer + **logos**
+    # 5) Power Vibes (Season) — slim table + short explainer + EMBEDDED LOGOS
     out.append("## Power Vibes (Season-to-Date)")
     out.append("We rank teams by what actually wins weeks: **points stacked over time**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.\n")
     out.append(rb.power_vibes_blurb(season_rank) + "\n")
@@ -91,11 +97,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
         rows = []
         for r in season_rank:
             fid = str(r["id"]).zfill(4)
-            # Render the logo (no team name text)
-            logo_md = _franchise_img_cell(fid, r["team"], logos_dir)
+            logo_html = _embed_logo_html(fid, r["team"], logos_dir)
             rows.append([
                 str(r["rank"]),
-                logo_md,
+                logo_html,  # embed image directly so it renders in the artifact
                 _fmt2(r["pts_sum"]),
                 _fmt2(r["avg"]),
             ])
