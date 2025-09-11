@@ -17,6 +17,10 @@ from .value_engine import compute_values
 from .newsletter import render_newsletter
 
 
+# ----------------------
+# Utilities
+# ----------------------
+
 def _read_config(path: str | Path = "config.yaml") -> Dict[str, Any]:
     p = Path(path)
     if not p.exists():
@@ -48,9 +52,14 @@ def _merge_franchise_names(*maps: Dict[str, str] | None) -> Dict[str, str]:
     return out
 
 
+# ----------------------
+# Standings helpers
+# ----------------------
+
 def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
+    # Prefer pre-built rows from fetch_week
     rows = week_data.get("standings_rows")
-    if isinstance(rows, list) and rows and all(isinstance(r, dict) for r in rows):
+    if isinstance(rows, list) and all(isinstance(r, dict) for r in rows):
         return rows
 
     rows = []
@@ -74,15 +83,15 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
                 "vp": _safe_float(r.get("vp") or r.get("victory_points") or 0),
             })
 
-    # fallback: synthesize PF from weekly_results totals
+    # Fallback: synthesize PF from weekly totals if needed
     if not rows:
         wr = week_data.get("weekly_results") or {}
-        matchups = wr.get("matchups") if isinstance(wr, dict) else None
+        wjson = wr.get("weeklyResults") if isinstance(wr, dict) else {}
+        matchups = (wjson or {}).get("matchup") or []
         if isinstance(matchups, dict):
             matchups = [matchups]
-        matchups = matchups or []
         pf_map: Dict[str, float] = {}
-        for m in matchups:
+        for m in matchups or []:
             franchises = m.get("franchise") or []
             if isinstance(franchises, dict):
                 franchises = [franchises]
@@ -98,129 +107,117 @@ def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> L
 
 
 # ----------------------
-# Starters extraction — handles normalized AND raw weeklyResults (global player list too)
+# Starters extraction for value engine
 # ----------------------
 
 def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-    result: Dict[str, List[Dict[str, Any]]] = {}
-    wr = week_data.get("weekly_results") or {}
+    """
+    Build: { franchise_id: [ {player_id, player, pos, team, pts}, ... ] }
 
-    # Path A: normalized {'matchups': [...]}
-    matchups = wr.get("matchups") if isinstance(wr, dict) else None
+    We read raw weeklyResults from multiple known placements:
+      - weeklyResults.player[]              (GLOBAL)
+      - weeklyResults.matchup[].player[]    (MATCHUP)
+      - weeklyResults.matchup[].franchise[].players.player[] or .player[]
+      - weeklyResults.matchup[].franchise[].starters  (CSV of player IDs)
+
+    We prefer per-player rows matching 'starters' IDs; if no starters are present,
+    we at least record a team total for a franchise.
+    """
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    wr = week_data.get("weekly_results") or {}
+    wrn = wr.get("weeklyResults") if isinstance(wr, dict) else None
+    if not isinstance(wrn, dict):
+        return out
+
+    # GLOBAL player list (some shards do this)
+    global_players = wrn.get("player") or []
+    if isinstance(global_players, dict):
+        global_players = [global_players]
+    gp_idx: Dict[str, Dict[str, Any]] = {}
+    for p in global_players:
+        pid = str(p.get("id") or "").strip()
+        if not pid:
+            continue
+        gp_idx[pid] = {
+            "pts": _safe_float(p.get("score") or p.get("points") or 0.0),
+            "name": str(p.get("name") or "").strip(),
+            "pos": str(p.get("position") or p.get("pos") or "").strip(),
+            "team": (str(p.get("team") or "").strip() or None),
+        }
+
+    matchups = wrn.get("matchup") or []
     if isinstance(matchups, dict):
         matchups = [matchups]
-    if isinstance(matchups, list) and matchups:
-        for m in matchups:
-            franchises = m.get("franchise") or []
-            if isinstance(franchises, dict):
-                franchises = [franchises]
-            for fr in franchises:
-                fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
-                players = (fr.get("players") or {}).get("player") or []
-                if isinstance(players, dict):
-                    players = [players]
-                if players:
-                    for p in players:
-                        result.setdefault(fid, []).append({
-                            "player_id": str(p.get("id") or "").strip(),
-                            "player": str(p.get("name") or "").strip(),
-                            "pos": str(p.get("position") or p.get("pos") or "").strip(),
-                            "team": (str(p.get("team") or "").strip() or None),
-                            "pts": _safe_float(p.get("score") or p.get("points"), 0.0),
-                        })
-                else:
-                    score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
-                    result.setdefault(fid, []).append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
-        return result
 
-    # Path B: RAW weeklyResults (with global and/or matchup/franchise player nodes)
-    wrn = wr.get("weeklyResults") if isinstance(wr, dict) else None
-    if isinstance(wrn, dict):
-        mlist = wrn.get("matchup") or []
-        if isinstance(mlist, dict):
-            mlist = [mlist]
-
-        # Index a GLOBAL player table if present (some shards do this)
-        global_players = wrn.get("player") or []
-        if isinstance(global_players, dict):
-            global_players = [global_players]
-        gp_idx: Dict[str, Dict[str, Any]] = {}
-        for p in global_players:
+    for m in matchups or []:
+        # MATCHUP-level players
+        match_players = m.get("player") or []
+        if isinstance(match_players, dict):
+            match_players = [match_players]
+        mp_idx: Dict[str, Dict[str, Any]] = {}
+        for p in match_players:
             pid = str(p.get("id") or "").strip()
             if not pid:
                 continue
-            gp_idx[pid] = {
+            mp_idx[pid] = {
                 "pts": _safe_float(p.get("score") or p.get("points") or 0.0),
                 "name": str(p.get("name") or "").strip(),
                 "pos": str(p.get("position") or p.get("pos") or "").strip(),
                 "team": (str(p.get("team") or "").strip() or None),
             }
 
-        for m in (mlist or []):
-            # Matchup-level player table (some shards put it here)
-            match_players = m.get("player") or []
-            if isinstance(match_players, dict):
-                match_players = [match_players]
-            mp_idx: Dict[str, Dict[str, Any]] = {}
-            for p in match_players:
+        franchises = m.get("franchise") or []
+        if isinstance(franchises, dict):
+            franchises = [franchises]
+
+        for fr in franchises:
+            fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
+
+            # Franchise-level players block
+            f_pl = fr.get("players") or fr.get("player") or []
+            if isinstance(f_pl, dict):
+                f_pl = f_pl.get("player") or f_pl
+            if isinstance(f_pl, dict):
+                f_pl = [f_pl]
+            fp_idx: Dict[str, Dict[str, Any]] = {}
+            for p in (f_pl or []):
                 pid = str(p.get("id") or "").strip()
                 if not pid:
                     continue
-                mp_idx[pid] = {
+                fp_idx[pid] = {
                     "pts": _safe_float(p.get("score") or p.get("points") or 0.0),
                     "name": str(p.get("name") or "").strip(),
                     "pos": str(p.get("position") or p.get("pos") or "").strip(),
                     "team": (str(p.get("team") or "").strip() or None),
                 }
 
-            franchises = m.get("franchise") or []
-            if isinstance(franchises, dict):
-                franchises = [franchises]
-            for fr in franchises:
-                fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
+            # Starters CSV → pull points from franchise/matchup/global indices
+            starters = fr.get("starters")
+            rows: List[Dict[str, Any]] = []
+            if isinstance(starters, str) and starters.strip():
+                for pid in [t.strip() for t in starters.split(",") if t.strip()]:
+                    meta = fp_idx.get(pid) or mp_idx.get(pid) or gp_idx.get(pid) or {}
+                    rows.append({
+                        "player_id": pid,
+                        "player": str(meta.get("name") or "").strip(),
+                        "pos": str(meta.get("pos") or "").strip(),
+                        "team": meta.get("team"),
+                        "pts": _safe_float(meta.get("pts"), 0.0),
+                    })
 
-                # Franchise-level player list (if present)
-                f_pl = fr.get("players") or fr.get("player") or []
-                if isinstance(f_pl, dict):
-                    f_pl = f_pl.get("player") or f_pl
-                if isinstance(f_pl, dict):
-                    f_pl = [f_pl]
-                fp_idx: Dict[str, Dict[str, Any]] = {}
-                for p in (f_pl or []):
-                    pid = str(p.get("id") or "").strip()
-                    if not pid:
-                        continue
-                    fp_idx[pid] = {
-                        "pts": _safe_float(p.get("score") or p.get("points") or 0.0),
-                        "name": str(p.get("name") or "").strip(),
-                        "pos": str(p.get("position") or p.get("pos") or "").strip(),
-                        "team": (str(p.get("team") or "").strip() or None),
-                    }
+            # If we couldn’t resolve starters, at least keep the team total
+            if not rows:
+                score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
+                rows.append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
 
-                # Starters list is a CSV of player IDs
-                starters = fr.get("starters")
-                rows: List[Dict[str, Any]] = []
-                if isinstance(starters, str) and starters.strip():
-                    for pid in [t.strip() for t in starters.split(",") if t.strip()]:
-                        meta = fp_idx.get(pid) or mp_idx.get(pid) or gp_idx.get(pid) or {}
-                        rows.append({
-                            "player_id": pid,
-                            "player": str(meta.get("name") or "").strip(),
-                            "pos": str(meta.get("pos") or "").strip(),
-                            "team": meta.get("team"),
-                            "pts": _safe_float(meta.get("pts"), 0.0),
-                        })
+            out.setdefault(fid, []).extend(rows)
 
-                if not rows:
-                    score = _safe_float(fr.get("score") or fr.get("pf") or fr.get("points") or 0.0)
-                    rows.append({"player_id": "", "player": "Team Total", "pos": "", "team": None, "pts": score})
+    return out
 
-                result.setdefault(fid, []).extend(rows)
 
-        return result
-
-    return result
-
+# ----------------------
+# CLI + Main
+# ----------------------
 
 def _int_or_none(s: str | None) -> int | None:
     if s is None:
@@ -291,9 +288,9 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     out_dir = Path(cfg_out_dir or args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # MFL client ctor tolerance
+    # MFL client with tolerant ctor
     try:
-        client = MFLClient(league_id=league_id, year=year, tz=tz)
+        client = MFLClient(league_id=league_id, year=year, tz=tz)  # some versions accept tz
     except TypeError:
         try:
             client = MFLClient(league_id=league_id, year=year, timezone=tz)
@@ -302,22 +299,28 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
             setattr(client, "tz", tz)
             setattr(client, "timezone", tz)
 
+    # Fetch all data
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
 
+    # Franchise names
     f_names = _merge_franchise_names(
         week_data.get("franchise_names"),
         getattr(client, "franchise_names", None),
         cfg.get("franchise_names"),
     )
 
+    # Build standings + starters
     standings_rows = _build_standings_rows(week_data, f_names)
     starters_by_franchise = _extract_starters_by_franchise(week_data)
 
+    # Players map for enrich + salaries join
     players_map = week_data.get("players_map") or week_data.get("players") or {}
 
+    # Salaries are REQUIRED
     salary_glob = _resolve_required_salaries_glob(cfg)
     salaries_df = load_salary_file(salary_glob)
 
+    # Value engine: this argument order matches your working run
     values_out: Dict[str, Any] = compute_values(
         salaries_df,
         players_map,
@@ -352,6 +355,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
         "roasts": [],
     }
 
+    # --- sanity checks (log but DO NOT hard-fail) ---
     problems = []
     if not standings_rows:
         problems.append("standings_rows is empty (no standings/boxscores found)")
@@ -360,14 +364,15 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     if not (top_values or top_busts or team_efficiency):
         problems.append("no value metrics (likely because starters or salaries didn’t join)")
 
-if problems:
-    print("[sanity] Week", week, "had issues:")
-    for p in problems:
-        print(" -", p)
-    wk_keys = sorted((week_data or {}).keys())
-    print("[sanity] week_data keys:", wk_keys)
-    print("[sanity] proceeding to write outputs anyway for debugging…")
+    if problems:
+        print("[sanity] Week", week, "had issues:")
+        for p in problems:
+            print(" -", p)
+        wk_keys = sorted((week_data or {}).keys())
+        print("[sanity] week_data keys:", wk_keys)
+        print("[sanity] proceeding to write outputs anyway for debugging…")
 
+    # Debug context for inspection
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -375,7 +380,9 @@ if problems:
     except Exception:
         pass
 
+    # Render newsletter (your renderer returns {"md_path":..., "html_path":...})
     outputs_dict = render_newsletter(payload, output_dir=str(out_dir), week=week)
+
     md_path = outputs_dict.get("md_path")
     html_path = outputs_dict.get("html_path")
     paths: List[Path] = []
@@ -389,6 +396,7 @@ if problems:
     if paths:
         return tuple(paths)  # type: ignore[return-value]
 
+    # Ensure CI has something to upload
     stub_md = out_dir / f"week_{_week_label(week)}.md"
     stub_md.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
     print(f"Wrote: {stub_md}")
