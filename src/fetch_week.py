@@ -85,6 +85,19 @@ def _weekly_results(year: int, league_id: str, week: int) -> Dict[str, Any]:
     return _get_json(url, params)
 
 
+def _live_scoring(year: int, league_id: str, week: int) -> Dict[str, Any]:
+    """
+    liveScoring typically contains per-player scoring with
+    {'liveScoring': {'matchup': [{'franchise': [{'players': {'player': [...]}}]}]}}
+    """
+    url = f"{_base_url(year)}/export"
+    params = {"TYPE": "liveScoring", "L": str(league_id), "W": str(week), "DETAILS": 1}
+    apikey = _get_api_key()
+    if apikey:
+        params["APIKEY"] = apikey
+    return _get_json(url, params)
+
+
 def _standings(year: int, league_id: str) -> Dict[str, Any]:
     url = f"{_base_url(year)}/export"
     params = {"TYPE": "leagueStandings", "L": str(league_id), "COLUMN_NAMES": "", "ALL": "", "WEB": ""}
@@ -112,6 +125,124 @@ def _survivor(year: int, league_id: str) -> Dict[str, Any]:
     return _get_json(url, params)
 
 
+def _normalize_matchups(weekly_results_json: Dict[str, Any], live_scoring_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Normalize a 'matchups' list with each item like:
+      { 'franchise': [
+          { 'id': '0001', 'score': ..., 'players': { 'player': [ {id, name, position, team, score}, ... ] } },
+          { 'id': '0002', 'score': ..., 'players': { 'player': [...] } }
+        ]
+      }
+
+    Prefer liveScoring per-player data; fall back to weeklyResults totals.
+    """
+    # 1) Pull liveScoring shape
+    ls = (live_scoring_json or {}).get("liveScoring") or {}
+    ls_matchups = ls.get("matchup") or []
+    if isinstance(ls_matchups, dict):
+        ls_matchups = [ls_matchups]
+
+    # 2) Pull weeklyResults shape (for scores / backup)
+    wr = (weekly_results_json or {}).get("weeklyResults") or {}
+    wr_matchups = wr.get("matchup") or []
+    if isinstance(wr_matchups, dict):
+        wr_matchups = [wr_matchups]
+
+    # Index weeklyResults by a simple key (franchise ids sorted) to merge scores if needed
+    def _key_for_m(m: Dict[str, Any]) -> str:
+        f = m.get("franchise") or []
+        if isinstance(f, dict):
+            f = [f]
+        ids = []
+        for x in f:
+            ids.append(str(x.get("id") or x.get("franchise_id") or "").zfill(4))
+        return ",".join(sorted(ids))
+
+    wr_by_key: Dict[str, Dict[str, Any]] = {}
+    for m in wr_matchups:
+        wr_by_key[_key_for_m(m)] = m
+
+    out: List[Dict[str, Any]] = []
+
+    # Build from liveScoring if present
+    if ls_matchups:
+        for m in ls_matchups:
+            frs = m.get("franchise") or []
+            if isinstance(frs, dict):
+                frs = [frs]
+            norm_frs: List[Dict[str, Any]] = []
+            for fr in frs:
+                fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
+
+                # Score from livescoring if present; else supplement from weeklyResults
+                score = fr.get("score")
+                if score is None:
+                    # try weeklyResults partner
+                    k = _key_for_m(m)
+                    wr_m = wr_by_key.get(k) or {}
+                    wr_frs = wr_m.get("franchise") or []
+                    if isinstance(wr_frs, dict):
+                        wr_frs = [wr_frs]
+                    for _fr in wr_frs:
+                        if str(_fr.get("id") or "").zfill(4) == fid:
+                            score = _fr.get("score") or _fr.get("pf") or _fr.get("points")
+                            break
+
+                # Player list
+                players_node = fr.get("players") or {}
+                players = players_node.get("player") or []
+                if isinstance(players, dict):
+                    players = [players]
+
+                # Normalize fields
+                norm_players: List[Dict[str, Any]] = []
+                for p in players:
+                    pid = str(p.get("id") or "").strip()
+                    nm = (p.get("name") or "").strip()
+                    pos = (p.get("position") or p.get("pos") or "").strip()
+                    team = (p.get("team") or "").strip()
+                    pts = p.get("score") or p.get("points") or 0.0
+                    try:
+                        pts = float(pts)
+                    except Exception:
+                        pts = 0.0
+                    norm_players.append({
+                        "id": pid,
+                        "name": nm,
+                        "position": pos,
+                        "team": team,
+                        "score": pts,
+                    })
+
+                norm_frs.append({
+                    "id": fid,
+                    "score": score,
+                    "players": {"player": norm_players} if norm_players else {},
+                })
+
+            out.append({"franchise": norm_frs})
+
+        return out
+
+    # Fallback: only weeklyResults available; still emit matchup/franchise with team totals
+    for m in wr_matchups:
+        frs = m.get("franchise") or []
+        if isinstance(frs, dict):
+            frs = [frs]
+        norm_frs = []
+        for fr in frs:
+            fid = str(fr.get("id") or fr.get("franchise_id") or "").zfill(4)
+            score = fr.get("score") or fr.get("pf") or fr.get("points") or 0.0
+            norm_frs.append({
+                "id": fid,
+                "score": score,
+                "players": {},  # no per-player data
+            })
+        out.append({"franchise": norm_frs})
+
+    return out
+
+
 def fetch_week_data(client, week: int) -> Dict[str, Any]:
     year = getattr(client, "year", None)
     league_id = getattr(client, "league_id", None)
@@ -119,18 +250,22 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
         raise ValueError("fetch_week_data: client must expose .year and .league_id")
 
     # Pull all primary data
-    weekly_results = _weekly_results(year, league_id, week)
+    weekly_results_json = _weekly_results(year, league_id, week)
+    live_scoring_json = _live_scoring(year, league_id, week)
     standings_json = _standings(year, league_id)
     pool_nfl = _pool(year, league_id)
     survivor_pool = _survivor(year, league_id)
     players_dir = _players_directory(year, league_id)
 
-    # franchise name map for pretty printing
+    # franchise name map + simple standings rows (as you already had)
     fmap: Dict[str, str] = {}
     standings_rows: List[Dict[str, Any]] = []
     ls = (standings_json or {}).get("leagueStandings")
     if isinstance(ls, dict):
-        for fr in (ls.get("franchise") or []):
+        fr_list = ls.get("franchise") or []
+        if isinstance(fr_list, dict):
+            fr_list = [fr_list]
+        for fr in fr_list:
             fid = str(fr.get("id") or "").strip()
             nm = (fr.get("name") or fr.get("fname") or fid).strip()
             fmap[fid] = nm
@@ -144,10 +279,16 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
                 vp = 0.0
             standings_rows.append({"id": fid, "name": nm, "pf": pf, "vp": vp})
 
+    # Normalize weekly results + per-player from liveScoring
+    matchups = _normalize_matchups(weekly_results_json, live_scoring_json)
+
     print(f"[fetch_week] players_dir size: {len(players_dir)}")
 
     return {
-        "weekly_results": weekly_results,
+        "weekly_results": {
+            # give main.py a flattened, uniform place to look
+            "matchups": matchups
+        },
         "standings_rows": standings_rows,
         "pool_nfl": pool_nfl,
         "survivor_pool": survivor_pool,
