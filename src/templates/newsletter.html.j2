@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{{ title or "NPFFL Weekly Roast" }} — Week {{ week_label }}</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --fg: #111;
+        --muted: #555;
+        --bg: #fff;
+        --accent: #0b5fff;
+        --table-border: #e5e7eb;
+      }
+      html, body { margin:0; padding:0; background:var(--bg); color:var(--fg); font: 16px/1.6 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji; }
+      .page { max-width: 860px; margin: 2rem auto; padding: 0 1rem 3rem; }
+      header { margin-bottom: 1.25rem; }
+      header h1 { margin: 0 0 .25rem; font-size: 2rem; line-height: 1.2; }
+      header .meta { color: var(--muted); }
+      h2 { margin-top: 2rem; }
+      h3 { margin-top: 1.25rem; }
+      table { width:100%; border-collapse: collapse; margin: .75rem 0 1.25rem; }
+      th, td { padding: .5rem .6rem; border-bottom: 1px solid var(--table-border); vertical-align: top; }
+      thead th { text-align: left; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+      .footer { margin-top: 2rem; color: var(--muted); font-size: .95rem; }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <h1>{{ title or "NPFFL Weekly Roast" }}</h1>
+        <div class="meta">
+          <strong>Week {{ week_label }}</strong>
+          {% if timezone %} · {{ timezone }}{% endif %}
+        </div>
+      </header>
+
+      <!-- Inject the rendered Markdown as HTML -->
+      <main>
+        {{ content_html | safe }}
+      </main>
+
+      <div class="footer">
+        <em>Generated automatically.</em>
+      </div>
+    </div>
+  </body>
+</html>
