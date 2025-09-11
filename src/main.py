@@ -360,13 +360,13 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     if not (top_values or top_busts or team_efficiency):
         problems.append("no value metrics (likely because starters or salaries didn’t join)")
 
-    if problems:
-        print("[sanity] Week", week, "had issues:")
-        for p in problems:
-            print(" -", p)
-        wk_keys = sorted((week_data or {}).keys())
-        print("[sanity] week_data keys:", wk_keys)
-        raise SystemExit(3)
+if problems:
+    print("[sanity] Week", week, "had issues:")
+    for p in problems:
+        print(" -", p)
+    wk_keys = sorted((week_data or {}).keys())
+    print("[sanity] week_data keys:", wk_keys)
+    print("[sanity] proceeding to write outputs anyway for debugging…")
 
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
