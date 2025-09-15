@@ -47,7 +47,6 @@ jobs:
           echo "THE_ODDS_API_KEY=${THE_ODDS_API_KEY}" >> "$GITHUB_ENV"
 
       - name: Run newsletter
-        continue-on-error: true
         env:
           WEEK: ${{ github.event.inputs.week }}
         run: |

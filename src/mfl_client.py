@@ -91,9 +91,8 @@ class MFLClient:
             pass
 
     def _has_valid_cookies(self) -> bool:
-        # Heuristic: presence of 'MFL_USER_ID' or session cookie suggests we’re logged in
-        ck = self.sess.cookies.get_dict()
-        return any(k.lower().startswith("mfl") or k.lower().startswith("session") for k in ck.keys())
+        ck = {k.lower(): v for k, v in self.sess.cookies.get_dict().items()}
+        return "mfl_user_id" in ck or "mfl_login_time" in ck
 
     def _login_and_cache(self) -> None:
         """

@@ -1,34 +1,11 @@
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
 from typing import Any, Dict, List
-import requests
+import json
+import os
 
-
-def _get_api_key() -> str:
-    return os.environ.get("MFL_API_KEY", "").strip()
-
-
-def _host() -> str:
-    # Your league uses www46; allow override via env if needed.
-    return os.environ.get("MFL_HOST", "www46.myfantasyleague.com")
-
-
-def _base_url(year: int) -> str:
-    return f"https://{_host()}/{year}"
-
-
-def _get_json(url: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    q = dict(params or {})
-    q["JSON"] = 1
-    r = requests.get(url, params=q, timeout=30)
-    r.raise_for_status()
-    try:
-        return r.json()
-    except Exception:
-        return {}
+from .mfl_client import MFLClient
 
 
 def _first_last(name: str) -> str:
@@ -46,17 +23,9 @@ def _last_first_from_fl(fl: str) -> str:
     return fl
 
 
-def _players_directory(year: int, league_id: str) -> Dict[str, Dict[str, str]]:
-    """
-    Canonical players directory (names/pos/team) so we can enrich weekly data.
-    """
-    url = f"{_base_url(year)}/export"
-    params = {"TYPE": "players", "L": str(league_id), "DETAILS": 1}
-    apikey = _get_api_key()
-    if apikey:
-        params["APIKEY"] = apikey
-    data = _get_json(url, params)
-
+def _players_directory(client: MFLClient) -> Dict[str, Dict[str, str]]:
+    """Canonical players directory (names/pos/team) to enrich weekly data."""
+    data = client.get_players(details=1)
     out: Dict[str, Dict[str, str]] = {}
     rows = (data or {}).get("players", {}).get("player", []) or []
     if isinstance(rows, dict):
@@ -74,54 +43,17 @@ def _players_directory(year: int, league_id: str) -> Dict[str, Dict[str, str]]:
     return out
 
 
-def _weekly_results(year: int, league_id: str, week: int) -> Dict[str, Any]:
-    url = f"{_base_url(year)}/export"
-    params = {"TYPE": "weeklyResults", "L": str(league_id), "W": str(week)}
-    apikey = _get_api_key()
-    if apikey:
-        params["APIKEY"] = apikey
-    return _get_json(url, params)
-
-
-def _standings(year: int, league_id: str) -> Dict[str, Any]:
-    url = f"{_base_url(year)}/export"
-    params = {"TYPE": "leagueStandings", "L": str(league_id), "COLUMN_NAMES": "", "ALL": "", "WEB": ""}
-    apikey = _get_api_key()
-    if apikey:
-        params["APIKEY"] = apikey
-    return _get_json(url, params)
-
-
-def _pool(year: int, league_id: str) -> Dict[str, Any]:
-    url = f"{_base_url(year)}/export"
-    params = {"TYPE": "pool", "L": str(league_id), "POOLTYPE": "NFL"}
-    apikey = _get_api_key()
-    if apikey:
-        params["APIKEY"] = apikey
-    return _get_json(url, params)
-
-
-def _survivor(year: int, league_id: str) -> Dict[str, Any]:
-    url = f"{_base_url(year)}/export"
-    params = {"TYPE": "survivorPool", "L": str(league_id)}
-    apikey = _get_api_key()
-    if apikey:
-        params["APIKEY"] = apikey
-    return _get_json(url, params)
-
-
-def fetch_week_data(client, week: int) -> Dict[str, Any]:
+def fetch_week_data(client: MFLClient, week: int) -> Dict[str, Any]:
     year = getattr(client, "year", None)
     league_id = getattr(client, "league_id", None)
     if not year or not league_id:
         raise ValueError("fetch_week_data: client must expose .year and .league_id")
 
-    # Pull core payloads
-    weekly_results = _weekly_results(year, league_id, week)   # RAW weeklyResults JSON
-    standings_json = _standings(year, league_id)
-    pool_nfl = _pool(year, league_id)
-    survivor_pool = _survivor(year, league_id)
-    players_dir = _players_directory(year, league_id)
+    weekly_results = client.get_weekly_results(week=week)
+    standings_json = client.get_league_standings()
+    pool_nfl = client.get_pool(pooltype="NFL")
+    survivor_pool = client.get_survivor()
+    players_dir = _players_directory(client)
 
     # Dump raw weeklyResults for debugging so we can tailor the extractor
     try:
@@ -133,7 +65,6 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
     except Exception as e:
         print(f"[fetch_week] failed to dump weeklyResults: {e}")
 
-    # Franchise name map + quick standings rows
     fmap: Dict[str, str] = {}
     standings_rows: List[Dict[str, Any]] = []
     ls = (standings_json or {}).get("leagueStandings")
@@ -158,7 +89,6 @@ def fetch_week_data(client, week: int) -> Dict[str, Any]:
     print(f"[fetch_week] players_dir size: {len(players_dir)}")
 
     return {
-        # Keep the RAW weeklyResults so main.py can parse your shard’s exact shape.
         "weekly_results": weekly_results,
         "standings_rows": standings_rows,
         "pool_nfl": pool_nfl,

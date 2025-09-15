@@ -5,7 +5,10 @@ import glob
 from pathlib import Path
 from typing import Optional, Tuple, List
 
+import logging
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 
 def _normalize_name(raw: str) -> str:
@@ -146,7 +149,7 @@ def load_salary_file(salary_glob: str = "data/salaries/2025_*_Salary.xlsx") -> p
     # drop empty names
     df = df[df["name"] != ""].copy()
 
-    print(f"[load_salary] Loaded {len(df)} salary rows from '{xlsx_path.name}'")
-    print(f"[load_salary] Detected -> name='name', pos='pos', team='team', salary='salary'")
+    logger.info("[load_salary] Loaded %d salary rows from '%s'", len(df), xlsx_path.name)
+    logger.info("[load_salary] Detected -> name='name', pos='pos', team='team', salary='salary'")
 
     return df

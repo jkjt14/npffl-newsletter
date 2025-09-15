@@ -12,11 +12,12 @@ def _z4(x: str | int) -> str:
 def load_history(dirpath: str) -> History:
     p = Path(dirpath) / "history.json"
     if not p.exists():
-        return {"teams": {}, "meta": {}}
+        raise FileNotFoundError(p)
+    text = p.read_text(encoding="utf-8")
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {"teams": {}, "meta": {}}
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"history.json is invalid JSON: {p}") from e
 
 def save_history(history: History, dirpath: str) -> None:
     Path(dirpath).mkdir(parents=True, exist_ok=True)

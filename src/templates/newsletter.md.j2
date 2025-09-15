@@ -1,18 +1,18 @@
-# {{ title }} — Week {{ week_label }}
+# {{ title|e }} — Week {{ week_label }}
 
 ## Standings Snapshot
 | Team | PF | VP |
 |---|---:|---:|
 {% for r in standings_rows %}
-| {{ r.name }} | {{ '%.1f'|format(r.pf) }} | {{ '%.1f'|format(r.vp) }} |
+| {{ r.name|e }} | {{ '%.1f'|format(r.pf) }} | {{ '%.1f'|format(r.vp) }} |
 {% endfor %}
 
 ## Top Values (Pts per $1K)
 {% for r in top_values %}
-- **{{ r.player }}** ({{ r.pos }} {{ r.team }}) — {{ '%.1f'|format(r.pts) }} pts on ${{ '%.0f'|format(r.salary) }} → **{{ '%.2f'|format(r.ppk) }} pts/$1K**
+- **{{ r.player|e }}** ({{ r.pos|e }} {{ r.team|e }}) — {{ '%.1f'|format(r.pts) }} pts on ${{ '%.0f'|format(r.salary) }} → **{{ '%.2f'|format(r.ppk) }} pts/$1K**
 {% endfor %}
 
 ## Biggest Busts (Costly Duds)
 {% for r in top_busts %}
-- **{{ r.player }}** ({{ r.pos }} {{ r.team }}) — {{ '%.1f'|format(r.pts) }} pts on ${{ '%.0f'|format(r.salary) }} → **{{ '%.2f'|format(r.ppk) }} pts/$1K**
+- **{{ r.player|e }}** ({{ r.pos|e }} {{ r.team|e }}) — {{ '%.1f'|format(r.pts) }} pts on ${{ '%.0f'|format(r.salary) }} → **{{ '%.2f'|format(r.ppk) }} pts/$1K**
 {% endfor %}

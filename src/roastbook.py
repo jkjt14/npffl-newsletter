@@ -1,54 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
-import statistics, random, re
+import statistics
 from collections import Counter, defaultdict
 
-# =========================
-# Tone dial & prose helpers
-# =========================
-
-class Tone:
-    def __init__(self, name: str = "spicy"):
-        self.name = (name or "spicy").strip().lower()
-        if self.name not in ("mild", "spicy", "inferno"):
-            self.name = "spicy"
-
-    @property
-    def emojis(self) -> Dict[str, str]:
-        if self.name == "mild":
-            return {"fire":"", "ice":"", "dart":"", "warn":"", "boom":"", "jail":""}
-        if self.name == "inferno":
-            return {"fire":"🔥", "ice":"🧊", "dart":"🎯", "warn":"🟡", "boom":"💥", "jail":"🚔"}
-        # spicy
-        return {"fire":"🔥", "ice":"🧊", "dart":"🎯", "warn":"🟡", "boom":"💥", "jail":"🚔"}
-
-    def amp(self, text_spicy: str, text_mild: str = "") -> str:
-        if self.name == "mild":
-            return text_mild or re.sub(r"[!?]+", ".", text_spicy)
-        if self.name == "inferno":
-            return text_spicy
-        return text_spicy
-
-class ProseBuilder:
-    def __init__(self, tone: Tone):
-        self.used_words: set[str] = set()
-        self.tone = tone
-
-    def choose(self, items: List[str]) -> str:
-        if not items: return ""
-        pool = [w for w in items if w not in self.used_words]
-        pick = random.choice(pool or items)
-        self.used_words.add(pick)
-        return pick
-
-    def sentence(self, *parts: str) -> str:
-        text = " ".join(p.strip() for p in parts if p and p.strip())
-        text = re.sub(r"\s+", " ", text).strip()
-        if text and text[-1] not in ".!?…": text += "."
-        return text
-
-    def paragraph(self, *sentences: str) -> str:
-        return " ".join(s for s in sentences if s and s.strip())
+from .prose import Tone, ProseBuilder
 
 def _fmt2(x: float | int | None, default="0.00") -> str:
     if x is None: return default
