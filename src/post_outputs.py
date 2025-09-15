@@ -1,52 +1,9 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Tuple
-import statistics, random, re
+import statistics
 from collections import Counter, defaultdict
 
-# =========================
-# Tone dial & prose helpers
-# =========================
-
-class Tone:
-    def __init__(self, name: str = "spicy"):
-        self.name = (name or "spicy").strip().lower()
-        if self.name not in ("mild", "spicy", "inferno"):
-            self.name = "spicy"
-
-    @property
-    def emojis(self) -> Dict[str, str]:
-        if self.name == "mild":
-            return {"fire":"", "ice":"", "dart":"", "warn":"", "boom":"", "jail":""}
-        if self.name == "inferno":
-            return {"fire":"🔥", "ice":"🧊", "dart":"🎯", "warn":"🟡", "boom":"💥", "jail":"🚔"}
-        return {"fire":"🔥", "ice":"🧊", "dart":"🎯", "warn":"🟡", "boom":"💥", "jail":"🚔"}
-
-    def amp(self, text_spicy: str, text_mild: str = "") -> str:
-        if self.name == "mild":
-            return text_mild or re.sub(r"[!?]+", ".", text_spicy)
-        if self.name == "inferno":
-            return text_spicy
-        return text_spicy
-
-class ProseBuilder:
-    def __init__(self, tone: Tone):
-        self.used_templates: set[str] = set()
-        self.tone = tone
-
-    def choose_unique(self, templates: List[str]) -> str:
-        pool = [t for t in templates if t not in self.used_templates]
-        pick = random.choice(pool or templates)
-        self.used_templates.add(pick)
-        return pick
-
-    def sentence(self, *parts: str) -> str:
-        text = " ".join(p.strip() for p in parts if p and p.strip())
-        text = re.sub(r"\s+", " ", text).strip()
-        if text and text[-1] not in ".!?…": text += "."
-        return text
-
-    def paragraph(self, *sentences: str) -> str:
-        return " ".join(s for s in sentences if s and s.strip())
+from .prose import Tone, ProseBuilder
 
 def _fmt2(x: float | int | None, default="0.00") -> str:
     if x is None: return default
@@ -145,7 +102,7 @@ def headliners_blurb(rows: List[Dict[str, Any]], tone: Tone) -> str:
                 uniq.append(p); seen.add(nm)
             if len(uniq) == 2: break
         top2 = ", ".join(uniq) if uniq else ", ".join(plays[:2])
-        tmpl = pb.choose_unique(_HEAD_TEMPLATES)
+        tmpl = pb.choose(_HEAD_TEMPLATES, unique=True)
         lines.append(tmpl.format(team=team, plays=top2))
 
     closer = tone.amp("If you faded those names, you spent the night chasing.", "The headliners made the difference.")
@@ -193,7 +150,7 @@ def _team_support_blurb(rows: List[Dict[str, Any]], cap_players: int = 2) -> Lis
 def values_blurb(values: List[Dict[str, Any]], tone: Tone) -> str:
     if not values: return "No value play broke the room this time."
     pb = ProseBuilder(tone)
-    opener = pb.choose_unique(_VAL_OPENERS)
+    opener = pb.choose(_VAL_OPENERS, unique=True)
     teams = _team_support_blurb(values, cap_players=2)
     if not teams:
         names = ", ".join(_collapse([v.get("player") for v in values], 3))
@@ -216,7 +173,7 @@ def values_roast(tone: Tone) -> str:
 def busts_blurb(busts: List[Dict[str, Any]], tone: Tone) -> str:
     if not busts: return "Premium chalk held serve—no headline busts worth circling."
     pb = ProseBuilder(tone)
-    opener = pb.choose_unique(_BUST_OPENERS)
+    opener = pb.choose(_BUST_OPENERS, unique=True)
     teams = _team_support_blurb(busts, cap_players=2)
     if not teams:
         names = ", ".join(_collapse([b.get("player") for b in busts], 3))
@@ -445,7 +402,7 @@ def around_the_league_lines(franchise_names: Dict[str,str], scores_info: Dict[st
         if name in used:  # hard de-dupe
             continue
         used.add(name)
-        tmpl = pb.choose_unique(_atl_template_for(float(pts)))
+        tmpl = pb.choose(_atl_template_for(float(pts)), unique=True)
         line = tmpl.format(team=name, pts=_fmt2(pts))
         out.append(pb.sentence(line))
     return out

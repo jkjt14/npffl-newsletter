@@ -2,7 +2,7 @@ year: 2025
 league_id: 35410
 timezone: America/New_York
 newsletter:
-  title: "NPFFL Weekly Roast"
+  title: "NPFFL Weekly Newsletter"
   roast_level: "aggressive"
 schedule:
   cron_utc: "0 16 * * 2"

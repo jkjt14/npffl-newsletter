@@ -39,12 +39,8 @@ def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
         return alt_text
 
 def _clean_title(t: str) -> str:
-    """Force newsletter branding, remove any 'Roast' residue."""
+    """Ensure a usable newsletter title."""
     t = (t or "").strip() or "NPFFL Weekly Newsletter"
-    # sanitize any existing config that still says "Roast"
-    t = t.replace("Roast", "Newsletter").replace("ROAST", "NEWSLETTER")
-    if "Newsletter" not in t:
-        t = "NPFFL Weekly Newsletter"
     return t
 
 def _mk_md(payload: Dict[str, Any]) -> str:

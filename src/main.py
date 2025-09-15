@@ -201,24 +201,24 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--out-dir", default=os.environ.get("NPFFL_OUTDIR", "build"))
     return ap.parse_args()
 
-def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
-    args = _parse_args()
-    cfg = _read_config(args.config)
-
+def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     league_id = str(cfg.get("league_id") or os.environ.get("MFL_LEAGUE_ID") or "").strip()
     year = int(cfg.get("year") or os.environ.get("MFL_YEAR") or 2025)
     tz = cfg.get("timezone") or cfg.get("tz") or "America/New_York"
-    week = args.week if args.week is not None else int(cfg.get("week") or 1)
-
-    out_dir = Path(_cfg_get(cfg, "outputs.dir") or args.out_dir); out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     history_dir = str(Path(out_dir) / "history")
 
     # client
-    try: client = MFLClient(league_id=league_id, year=year, tz=tz)
+    try:
+        client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
-        try: client = MFLClient(league_id=league_id, year=year, timezone=tz)
+        try:
+            client = MFLClient(league_id=league_id, year=year, timezone=tz)
         except TypeError:
-            client = MFLClient(league_id=league_id, year=year); setattr(client, "tz", tz); setattr(client, "timezone", tz)
+            client = MFLClient(league_id=league_id, year=year)
+            setattr(client, "tz", tz)
+            setattr(client, "timezone", tz)
 
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
     f_names = _merge_franchise_names(week_data.get("franchise_names"), getattr(client, "franchise_names", None), cfg.get("franchise_names"))
@@ -310,7 +310,11 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     surv_summary = _survivor_summary(survivor_list, team_prob)
 
     # ---- Season history (consistency / luck / salary burn / rankings) ----
-    history = load_history(history_dir)
+    try:
+        history = load_history(history_dir)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"[history] {e}; starting fresh")
+        history = {"teams": {}, "meta": {}}
     # convert weekly_scores_pairs (fid, pts) to ensure all fids present
     update_history(
         history,
@@ -369,6 +373,14 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     stub.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
     print(f"Wrote: {stub}")
     return (stub,)
+
+
+def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
+    args = _parse_args()
+    cfg = _read_config(args.config)
+    week = args.week if args.week is not None else int(cfg.get("week") or 1)
+    out_dir = Path(_cfg_get(cfg, "outputs.dir") or args.out_dir)
+    return generate_newsletter(cfg, week, out_dir)
 
 if __name__ == "__main__":
     main()

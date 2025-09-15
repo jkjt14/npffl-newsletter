@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.request import urlopen, Request
 from urllib.error import URLError
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Minimal, dependency-free client for The Odds API (NFL moneyline)
 
@@ -52,7 +55,7 @@ def _american_to_prob(odds: float) -> float:
 def _norm(team: str) -> str:
     return TEAM_MAP.get(team.upper().strip(), team.upper().strip())
 
-def fetch_week_moneylines(api_key: Optional[str]) -> List[Dict[str, Any]]:
+def fetch_week_moneylines(api_key: Optional[str], retries: int = 3, backoff: float = 1.0) -> List[Dict[str, Any]]:
     """
     Pulls current NFL moneylines. If api_key is None or request fails, return [].
     Response normalized to:
@@ -66,11 +69,17 @@ def fetch_week_moneylines(api_key: Optional[str]) -> List[Dict[str, Any]]:
         return []
     url = (f"{ODDS_API_BASE}/sports/{SPORT}/odds?"
            f"regions={REGION}&markets={MARKETS}&oddsFormat={FORMAT}&apiKey={api_key}")
-    try:
-        data = _http_get_json(url)
-    except URLError:
-        return []
-    except Exception:
+    data = None
+    for attempt in range(retries):
+        try:
+            data = _http_get_json(url)
+            break
+        except URLError as e:
+            logger.warning("[odds_client] request failed: %s", e)
+        except Exception as e:
+            logger.warning("[odds_client] unexpected error: %s", e)
+        time.sleep(backoff * (2 ** attempt))
+    if data is None:
         return []
     out: List[Dict[str, Any]] = []
     for ev in data or []:
