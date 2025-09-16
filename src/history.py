@@ -74,6 +74,12 @@ def update_history(
         })
 
 def build_season_rankings(history: History) -> List[Dict[str, Any]]:
+    meta = history.get("meta") or {}
+    try:
+        salary_cap = float(meta.get("salary_cap", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        salary_cap = 0.0
+
     rows: List[Dict[str, Any]] = []
     for fid, t in (history.get("teams") or {}).items():
         weeks = sorted(t.get("weeks", []), key=lambda w: int(w.get("week", 0)))
@@ -88,6 +94,21 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         avg = (pts_sum / len(pts_list)) if pts_list else 0.0
         avg_cpp = (sum(cpp_list)/len(cpp_list)) if cpp_list else 0.0
         ppk = (pts_sum / (sal_sum/1000)) if sal_sum > 0 else 0.0  # hidden efficiency
+        ceiling = max(pts_list) if pts_list else 0.0
+        cv = (stdev / avg) if avg else 0.0
+
+        boom_rate = 0.0
+        bust_rate = 0.0
+        if pts_list and stdev > 0:
+            boom_cutoff = avg + stdev
+            bust_cutoff = avg - stdev
+            boom_rate = sum(1 for pts in pts_list if pts >= boom_cutoff) / len(pts_list)
+            bust_rate = sum(1 for pts in pts_list if pts <= bust_cutoff) / len(pts_list)
+
+        avg_cap_pct = 0.0
+        if salary_cap > 0:
+            avg_salary = sal_sum / len(weeks)
+            avg_cap_pct = (avg_salary / salary_cap) * 100.0
 
         rows.append({
             "id": fid,
@@ -100,6 +121,11 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             "avg_cpp": avg_cpp,
             "ppk": ppk,
             "sal_sum": sal_sum,
+            "boom_rate": boom_rate,
+            "bust_rate": bust_rate,
+            "avg_cap_pct": avg_cap_pct,
+            "cv": cv,
+            "ceiling": ceiling,
         })
 
     # compute league avg cpp for relative “salary burn rate”
@@ -123,6 +149,11 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             "avg_cpp": round(r["avg_cpp"], 4),
             "ppk": round(r["ppk"], 4),
             "vob": round(vob, 2),
+            "boom_rate": round(r["boom_rate"], 3),
+            "bust_rate": round(r["bust_rate"], 3),
+            "avg_cap_pct": round(r["avg_cap_pct"], 1),
+            "cv": round(r["cv"], 3),
+            "ceiling": round(r["ceiling"], 2),
         })
 
     for r in out:
