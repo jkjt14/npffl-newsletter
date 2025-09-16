@@ -207,7 +207,14 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     tz = cfg.get("timezone") or cfg.get("tz") or "America/New_York"
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    history_dir = str(Path(out_dir) / "history")
+
+    history_dir_cfg = (
+        _cfg_get(cfg, "history.dir")
+        or _cfg_get(cfg, "history.path")
+        or _cfg_get(cfg, "history_dir")
+    )
+    history_dir = Path(history_dir_cfg) if history_dir_cfg else Path("data") / "history"
+    history_dir.mkdir(parents=True, exist_ok=True)
 
     # client
     try:

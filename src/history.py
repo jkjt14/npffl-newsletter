@@ -9,7 +9,7 @@ History = Dict[str, Any]
 def _z4(x: str | int) -> str:
     return str(x).zfill(4)
 
-def load_history(dirpath: str) -> History:
+def load_history(dirpath: str | Path) -> History:
     p = Path(dirpath) / "history.json"
     if not p.exists():
         raise FileNotFoundError(p)
@@ -19,7 +19,7 @@ def load_history(dirpath: str) -> History:
     except json.JSONDecodeError as e:
         raise ValueError(f"history.json is invalid JSON: {p}") from e
 
-def save_history(history: History, dirpath: str) -> None:
+def save_history(history: History, dirpath: str | Path) -> None:
     Path(dirpath).mkdir(parents=True, exist_ok=True)
     p = Path(dirpath) / "history.json"
     p.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
