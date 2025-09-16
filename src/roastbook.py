@@ -76,6 +76,10 @@ _HEAD_TEMPLATES = [
     "— **{team}** got lift from {plays}",
     "— **{team}** stacked {plays} and made it count",
     "— **{team}** let {plays} carry the load",
+    "— **{team}** dialed up {plays} and blitzed the slate",
+    "— **{team}** let {plays} torch the secondary all night",
+    "— **{team}** fed {plays} in the paint and bullied the rim",
+    "— **{team}** rode {plays} like a hot goalie in overtime",
 ]
 
 def headliners_blurb(rows: List[Dict[str, Any]], tone: Tone) -> str:
@@ -122,11 +126,17 @@ _VAL_OPENERS = [
     "The bargain bin paid out where it mattered:",
     "Smart money found the quiet corners:",
     "The best tags wore no neon:",
+    "Coach’s tape truthers scooped these bench sparkplugs:",
+    "While the crowd chased spotlights, these dugout swings cleared the fence:",
+    "It took sandlot swagger to click the right coupons:",
 ]
 _BUST_OPENERS = [
     "On the other side of the ledger:",
     "Meanwhile, the pricey names left bruises:",
     "The tax bracket didn’t buy points here:",
+    "Champagne lineups skated face-first into the boards:",
+    "The high rollers butterfingered the ball at the goal line:",
+    "Top-shelf chalk got posterized at tipoff:",
 ]
 
 def _team_support_blurb(rows: List[Dict[str, Any]], cap_players: int = 2) -> List[Tuple[str, str]]:
