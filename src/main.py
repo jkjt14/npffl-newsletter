@@ -208,6 +208,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     history_dir = str(Path(out_dir) / "history")
+    salary_cap = _safe_float(cfg.get("salary_cap"), 0.0)
 
     # client
     try:
@@ -323,9 +324,10 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         franchise_names=f_names,
         weekly_scores=weekly_scores_pairs,
         team_efficiency=team_efficiency,
+        salary_cap=salary_cap,
     )
     save_history(history, history_dir)
-    season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, burn_rate_pct, ppk
+    season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, avg_cap_pct, burn_rate_pct, ppk
 
     payload: Dict[str, Any] = {
         "title": _cfg_get(cfg, "newsletter.title") or "NPFFL Weekly Newsletter",

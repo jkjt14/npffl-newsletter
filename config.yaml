@@ -1,6 +1,7 @@
 year: 2025
 league_id: 35410
 timezone: America/New_York
+salary_cap: 50000
 newsletter:
   title: "NPFFL Weekly Newsletter"
   roast_level: "aggressive"
