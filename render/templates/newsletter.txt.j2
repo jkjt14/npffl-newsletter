@@ -1,78 +1,39 @@
-{{ bundle.title or "NPFFL Weekly Roast" }} — Week {{ bundle.week_label }}
-{% if bundle.timezone %}Timezone: {{ bundle.timezone }}{% endif %}
+NPFFL Weekly — Week {{ week.week }} ({{ week.timezone }})
+Drop: {{ week.drop_time_et }} ET
 
-{% set narrative = narrative or {} %}
-{% set dump = narrative.dumpster_fire %}
-{% if dump and dump.tiers %}
-Dumpster Fire Watch
--------------------
-{% if dump.average %}League average score: {{ '%.2f'|format(dump.average) }}
-{% endif %}
-{% for tier in dump.tiers %}
-{{ tier.label }}
-{% for entry in tier.entries %}- {{ entry.blurb }}
-{% endfor %}
-{% if not loop.last %}
-{% endif %}
+Quick Hits
+{% for line in nar.quick_hits -%}
+- {{ line }}
 {% endfor %}
 
-{% endif %}
-{% set fraud = narrative.fraud_watch %}
-{% if fraud and fraud.entries %}
+Weekly Results
+{% for s in scores|sort(attribute="points", reverse=True) -%}
+- {{ teams_by_id[s.team_id] }} — {{ "%.2f"|format(s.points) }} pts{% if loop.first %} (Top Dog){% endif %}{% if loop.last %} (Basement){% endif %}
+{% endfor %}
+
+Dumpster Fire of the Week
+- {{ nar.dumpster_fire.name }} — {{ "%.2f"|format(nar.dumpster_fire.points) }} pts
+  {{ nar.dumpster_fire.line }}
+
+{% if nar.fraud_watch -%}
 Fraud Watch
------------
-{% for entry in fraud.entries %}- {{ entry.blurb }}
-{% endfor %}
+- {{ nar.fraud_watch.name }} → {{ "%.1f"|format(nar.fraud_watch.proj_next_week) }}
+  {{ nar.fraud_watch.line }}
+{%- endif %}
 
-{% endif %}
-{% set crime = narrative.vp_crime_scene %}
-{% if crime and (crime.villain or crime.victim) %}
+{% if nar.vp_crime_scene -%}
 VP Crime Scene
---------------
-{% if crime.villain %}- {{ crime.villain.blurb }}
-{% endif %}
-{% if crime.victim %}- {{ crime.victim.blurb }}
-{% endif %}
+- {{ nar.vp_crime_scene.name }} missed by {{ "%.2f"|format(nar.vp_crime_scene.diff) }}
+  {{ nar.vp_crime_scene.line }}
+{%- endif %}
 
-{% endif %}
-{% set spotlight = narrative.spotlight %}
-{% if spotlight %}
+{% if nar.talk_spotlight -%}
 Sh*t Talk Spotlight
--------------------
-{% if spotlight.top %}- {{ spotlight.top.blurb }}
-{% endif %}
-{% if spotlight.bottom %}- {{ spotlight.bottom.blurb }}
-{% endif %}
-{% if spotlight.headliner %}
-Note: {{ spotlight.headliner }}
-{% endif %}
+- {{ nar.talk_spotlight.name }}: {{ nar.talk_spotlight.tag }}
+{% for b in nar.talk_spotlight.busts -%}
+  • {{ b.player }} ({{ "%.1f"|format(b.pts) }} pts)
+{%- endfor %}
+  “{{ nar.talk_spotlight.quote }}”
+{%- endif %}
 
-{% endif %}
-{% set vb = narrative.value_vs_busts %}
-{% if vb and (vb.values or vb.busts) %}
-Value vs Busts
---------------
-{% if vb.values %}Values:
-{% for entry in vb.values %}- {{ entry.blurb }}
-{% endfor %}
-{% endif %}
-{% if vb.busts %}Busts:
-{% for entry in vb.busts %}- {{ entry.blurb }}
-{% endfor %}
-{% endif %}
-
-{% endif %}
-{% set pool = narrative.pool_report %}
-{% if pool and (pool.confidence or pool.survivor) %}
-Survivor & Confidence Pools
---------------------------
-{% if pool.confidence %}Confidence:
-{% for line in pool.confidence %}- {{ line }}
-{% endfor %}
-{% endif %}
-{% if pool.survivor %}Survivor:
-{% for line in pool.survivor %}- {{ line }}
-{% endfor %}
-{% endif %}
-
-{% endif %}Generated automatically. No mercy, just math.
+Generated automatically.
