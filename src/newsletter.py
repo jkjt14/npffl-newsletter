@@ -43,12 +43,33 @@ def _clean_title(t: str) -> str:
     t = (t or "").strip() or "NPFFL Weekly Newsletter"
     return t
 
+def _resolve_tone(payload: Dict[str, Any]) -> str:
+    """Pick a tone from payload/config, defaulting to the hottest setting."""
+
+    def _normalize(raw: Any) -> str | None:
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            raw = raw.strip()
+            return raw or None
+        return str(raw)
+
+    tone = _normalize(payload.get("tone"))
+    if tone:
+        return tone
+
+    tone = _normalize((payload.get("config") or {}).get("tone"))
+    if tone:
+        return tone
+
+    return "inferno"
+
 def _mk_md(payload: Dict[str, Any]) -> str:
     raw_title = payload.get("title", "") or (payload.get("config", {}) or {}).get("title", "")
     title = _clean_title(raw_title)
     week_label = payload.get("week_label", "00")
     week_num = int(str(week_label).lstrip("0") or "0") or payload.get("week", 0)
-    tone_name = (payload.get("tone") or payload.get("config", {}).get("tone") or "spicy")
+    tone_name = _resolve_tone(payload)
 
     # Data
     values = payload.get("top_values") or []
