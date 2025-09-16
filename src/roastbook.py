@@ -68,12 +68,29 @@ def weekly_results_blurb(scores: Dict[str, Any], tone: Tone) -> str:
     return pb.paragraph(lead, mid, chaos)
 
 def weekly_results_roast(tone: Tone) -> str:
+    pb = ProseBuilder(tone)
     e = tone.emojis["boom"]
-    if tone.name == "mild":
-        return "Margin for error was tiny; a single slot swung the room."
-    if tone.name == "inferno":
-        return f"{e} The middle was a blender—stack or get shredded."
-    return f"{e} One wrong click and you were chasing all night."
+    mild_lines = [
+        "Margin for error was tiny; a single slot swung the room.",
+        "Every roster spot mattered—breathing room was fiction.",
+        "The board was tight enough to make managers whisper.",
+    ]
+    spicy_lines = [
+        f"{e} One wrong click and you were chasing all night.",
+        f"{e} The scoreboard yo-yoed until the final whistle.",
+        f"{e} The mid-pack was a mosh pit; elbows optional.",
+    ]
+    inferno_lines = [
+        f"{e} The middle was a blender—stack or get shredded.",
+        f"{e} Every lineup hit the spin cycle and came out bruised.",
+        f"{e} That slate chewed through caution and spat out sparks.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # VP Drama
@@ -94,9 +111,28 @@ def vp_drama_blurb(vp: Dict[str, Any], tone: Tone) -> str:
     return pb.paragraph(a, b, c)
 
 def vp_drama_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Close calls build rivalries; this one just got interesting."
-    return f"{tone.emojis['fire']} Bottle service is closed—someone’s filing emotional chargebacks."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Close calls build rivalries; this one just got interesting.",
+        "Somebody's filing the tiebreakers for evidence.",
+        "VP math keeps grudges simmering.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['fire']} Bottle service is closed—someone’s filing emotional chargebacks.",
+        f"{tone.emojis['fire']} Decimal dust-ups turn coworkers into enemies.",
+        f"{tone.emojis['fire']} The velvet rope singed a few egos.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['fire']} Bottle service is closed—someone’s filing emotional chargebacks.",
+        f"{tone.emojis['fire']} The velvet rope is a tripwire and someone face-planted.",
+        f"{tone.emojis['fire']} VP bloodsport leaves chalk outlines around bubble teams.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # Headliners
@@ -146,9 +182,28 @@ def headliners_blurb(rows: List[Dict[str, Any]], tone: Tone) -> str:
     return " ".join(lines) + " " + pb.sentence(tone.amp(closer, "The best names did the heavy lifting."))
 
 def headliners_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Star power made the difference."
-    return f"{tone.emojis['fire']} The highlight reel was ruthless."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Star power made the difference.",
+        "The headliners did the heavy lifting.",
+        "Top-shelf names justified the hype.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['fire']} The highlight reel was ruthless.",
+        f"{tone.emojis['fire']} Fade the stars and you paid for it.",
+        f"{tone.emojis['fire']} The marquee crew hogged the ceiling.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['fire']} The highlight reel was ruthless.",
+        f"{tone.emojis['fire']} The main stage scorched everything around it.",
+        f"{tone.emojis['fire']} Headliners kicked in doors and torched the floor.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # Values / Busts (team-first)
@@ -209,9 +264,28 @@ def values_blurb(values: List[Dict[str, Any]], tone: Tone) -> str:
     return pb.paragraph(opener, lead_line, close)
 
 def values_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Sharp choices, clean returns."
-    return f"{tone.emojis['dart']} Quiet tags, loud results."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Sharp choices, clean returns.",
+        "Quiet value plays did their jobs.",
+        "Smart shopping turned into safe profit.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['dart']} Quiet tags, loud results.",
+        f"{tone.emojis['dart']} Cheap clicks kept smashing.",
+        f"{tone.emojis['dart']} Value hunters ate first.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['dart']} Quiet tags, loud results.",
+        f"{tone.emojis['dart']} Bargain bins burst into flames for the right managers.",
+        f"{tone.emojis['dart']} You either raided the discount rack or got lapped.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 def busts_blurb(busts: List[Dict[str, Any]], tone: Tone) -> str:
     if not busts: return "Premium chalk held serve—no headline busts worth circling."
@@ -232,9 +306,28 @@ def busts_blurb(busts: List[Dict[str, Any]], tone: Tone) -> str:
     return pb.paragraph(opener, lead_line, close)
 
 def busts_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Expensive names, quiet nights."
-    return f"{tone.emojis['ice']} Paying premium for silence is a special skill."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Expensive names, quiet nights.",
+        "Premium price, clearance-rack output.",
+        "Salary sunk, returns missing.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['ice']} Paying premium for silence is a special skill.",
+        f"{tone.emojis['ice']} Chalk royalty clocked in and then ghosted.",
+        f"{tone.emojis['ice']} High-dollar bricks everywhere.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['ice']} Paying premium for silence is a special skill.",
+        f"{tone.emojis['ice']} Luxury tags froze the room and scorched bankrolls.",
+        f"{tone.emojis['ice']} Wallets are still thawing from those frosty duds.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # Power Vibes (season prose)
@@ -254,9 +347,28 @@ def power_vibes_blurb(season_rows: List[Dict[str, Any]], tone: Tone) -> str:
     return pb.paragraph(*lines)
 
 def power_vibes_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Early patterns usually hold—until they don’t."
-    return f"{tone.emojis['fire']} Rank is rented; payments are weekly."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Early patterns usually hold—until they don’t.",
+        "Trends look stable, but the table still wobbles.",
+        "Momentum says stay patient, variance says otherwise.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['fire']} Rank is rented; payments are weekly.",
+        f"{tone.emojis['fire']} Momentum charges interest the second you slip.",
+        f"{tone.emojis['fire']} The table is lava for anyone getting comfy.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['fire']} Rank is rented; payments are weekly.",
+        f"{tone.emojis['fire']} The ladder is greased and the flames climb fast.",
+        f"{tone.emojis['fire']} Nobody keeps the penthouse once the alarms start.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # Confidence (odds narrative)
@@ -308,9 +420,28 @@ def confidence_story(conf3: List[Dict[str, Any]], team_prob: Dict[str, float], n
     return " ".join(parts) if parts else "Everything landed in the middle—no heroes, no villains."
 
 def confidence_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Upsets make the room louder; chalk makes it calmer."
-    return f"{tone.emojis['dart']} Pick bravely or live quietly."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Upsets make the room louder; chalk makes it calmer.",
+        "Pick bravely or settle for quiet nights.",
+        "Balance the drama—chalk for comfort, darts for stories.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['dart']} Pick bravely or live quietly.",
+        f"{tone.emojis['dart']} You either hunt chaos or nap with favorites.",
+        f"{tone.emojis['dart']} Confidence cards love bold handwriting.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['dart']} Pick bravely or live quietly.",
+        f"{tone.emojis['dart']} The bold get legend status, the timid get lullabies.",
+        f"{tone.emojis['dart']} Upset ink dries best when the slate is on fire.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # Survivor (odds narrative)
@@ -338,9 +469,28 @@ def survivor_story(surv: List[Dict[str, Any]], team_prob: Dict[str, float], no_p
     return " ".join(pieces)
 
 def survivor_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Staying alive is half the game."
-    return f"{tone.emojis['fire']} Survivor pays the brave and exposes the cautious."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Staying alive is half the game.",
+        "One step forward beats a misstep.",
+        "Survival is patience with a side of luck.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['fire']} Survivor pays the brave and exposes the cautious.",
+        f"{tone.emojis['fire']} Play scared and the trapdoor opens.",
+        f"{tone.emojis['fire']} Survivor glory belongs to the ones who flirt with disaster.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['fire']} Survivor pays the brave and exposes the cautious.",
+        f"{tone.emojis['fire']} The wire is frayed and the fire below is hungry.",
+        f"{tone.emojis['fire']} Survivor mode is pure adrenaline or sudden death.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # Chalk vs Leverage (ownership)
@@ -404,9 +554,28 @@ def chalk_leverage_blurb(starters_by_franchise: Dict[str, List[Dict[str, Any]]] 
     return " ".join(pieces)
 
 def chalk_leverage_roast(tone: Tone) -> str:
-    if tone.name == "mild":
-        return "Ownership told a familiar story."
-    return f"{tone.emojis['dart']} Fading the brochure is still a strategy."
+    pb = ProseBuilder(tone)
+    mild_lines = [
+        "Ownership told a familiar story.",
+        "The room followed the script and lived with the results.",
+        "Chalk and leverage behaved like old reruns.",
+    ]
+    spicy_lines = [
+        f"{tone.emojis['dart']} Fading the brochure is still a strategy.",
+        f"{tone.emojis['dart']} Ownership edges were there for anyone willing to squint.",
+        f"{tone.emojis['dart']} Chalk lemmings fed leverage sharks.",
+    ]
+    inferno_lines = [
+        f"{tone.emojis['dart']} Fading the brochure is still a strategy.",
+        f"{tone.emojis['dart']} Ownership firestorms roasted anyone stuck in line.",
+        f"{tone.emojis['dart']} Leverage assassins feasted on predictable chalk.",
+    ]
+    choices = {
+        "mild": mild_lines,
+        "spicy": spicy_lines,
+        "inferno": inferno_lines,
+    }
+    return pb.choose(choices.get(tone.name, spicy_lines))
 
 # ===================
 # One-liners per team (Around the League)
