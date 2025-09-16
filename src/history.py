@@ -35,19 +35,16 @@ def update_history(
     year: int,
     week: int,
     franchise_names: Dict[str, str],
-    weekly_scores: List[Tuple[str, float]],  # [(fid, pts)]
-    team_efficiency: List[Dict[str, Any]],   # [{"id": fid, "total_pts":..., "total_sal":...}]
+    weekly_scores: List[Tuple[str, float]],
+    team_efficiency: List[Dict[str, Any]],
 ) -> None:
     history["meta"]["year"] = year
 
-    # median PF for luck calc
     scores_only = [s for _, s in weekly_scores]
     median_pf = statistics.median(scores_only) if scores_only else 0.0
 
-    # league average cost-per-point for burn rate
     eff_idx: Dict[str, Dict[str, Any]] = {}
-    league_pts = 0.0
-    league_sal = 0.0
+    league_pts = league_sal = 0.0
     for row in team_efficiency:
         fid_raw = (
             row.get("id")
@@ -65,7 +62,6 @@ def update_history(
 
     league_cpp = (league_sal / league_pts) if league_pts else 0.0
 
-    # push a week row per team
     for fid, pts in weekly_scores:
         fid4 = _z4(fid)
         name = franchise_names.get(fid4, f"Team {fid4}")
@@ -118,21 +114,19 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         boom_rate = boom_count / weeks_played if weeks_played else 0.0
         bust_rate = bust_count / weeks_played if weeks_played else 0.0
 
-        rows.append(
-            {
-                "id": fid,
-                "team": t.get("name", fid),
-                "weeks": weeks_played,
-                "pts_sum": round(pts_sum, 2),
-                "avg": round(avg, 2),
-                "stdev": round(stdev, 2),
-                "luck_sum": round(luck_sum, 2),
-                "avg_cpp": round(avg_cpp, 4),
-                "ppk": round(ppk, 4),
-                "boom_rate": round(boom_rate, 3),
-                "bust_rate": round(bust_rate, 3),
-            }
-        )
+        rows.append({
+            "id": fid,
+            "team": t.get("name", fid),
+            "weeks": weeks_played,
+            "pts_sum": round(pts_sum, 2),
+            "avg": round(avg, 2),
+            "stdev": round(stdev, 2),
+            "luck_sum": round(luck_sum, 2),
+            "avg_cpp": round(avg_cpp, 4),
+            "ppk": round(ppk, 4),
+            "boom_rate": round(boom_rate, 3),
+            "bust_rate": round(bust_rate, 3),
+        })
 
     league_avg_cpp = 0.0
     cpp_vals = [r["avg_cpp"] for r in rows if r["avg_cpp"] > 0]
@@ -147,7 +141,6 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             r["burn_rate_pct"] = 0.0
         out.append(r)
 
-    # rank by hidden efficiency (ppk), then boom/bust rates, then avg/stdev
     out.sort(key=lambda x: (-x["ppk"], -x["boom_rate"], x["bust_rate"], -x["avg"], x["stdev"]))
     for i, r in enumerate(out, 1):
         r["rank"] = i
