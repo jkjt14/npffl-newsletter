@@ -1,6 +1,23 @@
+"""
+This is an updated version of `src/main.py` for the NPFFL newsletter.  It
+integrates the Barstool-style narrative generator and Jinja2 templates
+directly into the newsletter pipeline.  The major changes are:
+
+1. Import `build_narratives` and Jinja2 at the top.
+2. In `generate_newsletter`, after assembling the legacy `payload`, build
+   a WeekBundle from weekly scores and standings.
+3. Use `build_narratives` to create the narrative (`nar`) and render
+   `render/templates/newsletter.html.j2` and `newsletter.txt.j2` instead of
+   calling the old `_mk_md` generator via `render_newsletter`.
+
+You can drop this file in place of `src/main.py` in your repository to
+produce the updated Barstool-style newsletter.
+"""
+
 from __future__ import annotations
 
-from transform.league_narratives import build_narratives
+# New imports for Barstool narrative & templating
+from transform.league_narratives import build_narratives  # type: ignore
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 import argparse, glob, json, os, sys
@@ -12,30 +29,37 @@ from .mfl_client import MFLClient
 from .fetch_week import fetch_week_data
 from .load_salary import load_salary_file
 from .value_engine import compute_values
-from .newsletter import render_newsletter
+from .newsletter import render_newsletter  # retained for compatibility but unused here
 from .odds_client import fetch_week_moneylines, build_team_prob_index, TEAM_MAP
 from .history import load_history, save_history, update_history, build_season_rankings
 
 # ---------- utils ----------
 def _read_config(path: str | Path = "config.yaml") -> Dict[str, Any]:
-    p = Path(path); 
-    if not p.exists(): return {}
-    with p.open("r", encoding="utf-8") as f: return yaml.safe_load(f) or {}
+    p = Path(path)
+    if not p.exists():
+        return {}
+    with p.open("r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
 
-def _week_label(week: int | None) -> str: return f"{int(week):02d}" if week is not None else "01"
+def _week_label(week: int | None) -> str:
+    return f"{int(week):02d}" if week is not None else "01"
+
 def _safe_float(x: Any, default: float = 0.0) -> float:
-    try: return float(x)
-    except Exception: return default
+    try:
+        return float(x)
+    except Exception:
+        return default
 
 def _merge_franchise_names(*maps: Dict[str, str] | None) -> Dict[str, str]:
     out: Dict[str, str] = {}
     for mp in maps or []:
-        if not mp: continue
-        for k,v in mp.items():
-            if k is None: continue
+        if not mp:
+            continue
+        for k, v in mp.items():
+            if k is None:
+                continue
             out[str(k).zfill(4)] = str(v)
     return out
-
 
 def _history_weeks(history: Dict[str, Any]) -> set[int]:
     weeks: set[int] = set()
@@ -52,30 +76,38 @@ def _history_weeks(history: Dict[str, Any]) -> set[int]:
 def _cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
     cur = cfg
     for part in dotted.split("."):
-        if not isinstance(cur, dict) or part not in cur: return default
+        if not isinstance(cur, dict) or part not in cur:
+            return default
         cur = cur[part]
     return cur
 
 def _int_or_none(s: str | None) -> int | None:
-    if s is None: return None
+    if s is None:
+        return None
     s = str(s).strip()
     return None if s == "" else int(s)
 
 def _resolve_required_salaries_glob(cfg: Dict[str, Any]) -> str:
     cand: List[str] = []
-    v = _cfg_get(cfg, "inputs.salary_glob");  cand += [str(v)] if v else []
-    for k in ("salaries_path","salaries_file","salary_file"):
-        v = cfg.get(k);  cand += [str(v)] if v else []
-    env_glob = os.environ.get("SALARY_GLOB"); cand += [env_glob] if env_glob else []
+    v = _cfg_get(cfg, "inputs.salary_glob")
+    cand += [str(v)] if v else []
+    for k in ("salaries_path", "salaries_file", "salary_file"):
+        v = cfg.get(k)
+        cand += [str(v)] if v else []
+    env_glob = os.environ.get("SALARY_GLOB")
+    cand += [env_glob] if env_glob else []
     cand += ["data/salaries/*.xlsx", "salaries/*.xlsx"]
     tried = []
     for pat in cand:
-        pat = str(pat).strip(); 
-        if not pat: continue
+        pat = str(pat).strip()
+        if not pat:
+            continue
         tried.append(pat)
-        if glob.glob(pat): return pat
-    print("[salary] No salary files found. Looked for:"); 
-    for t in tried: print(" -", t)
+        if glob.glob(pat):
+            return pat
+    print("[salary] No salary files found. Looked for:")
+    for t in tried:
+        print(" -", t)
     print("Set inputs.salary_glob in config.yaml or SALARY_GLOB env.", file=sys.stderr)
     sys.exit(2)
 
@@ -85,7 +117,8 @@ def _derive_weekly_scores(week_data: Dict[str, Any]) -> List[Tuple[str, float]]:
     wr = week_data.get("weekly_results") or {}
     node = wr.get("weeklyResults") if isinstance(wr, dict) else {}
     franchises = (node or {}).get("franchise") or []
-    if isinstance(franchises, dict): franchises = [franchises]
+    if isinstance(franchises, dict):
+        franchises = [franchises]
     for fr in (franchises or []):
         fid = str(fr.get("id") or "").zfill(4)
         out.append((fid, _safe_float(fr.get("score"), 0.0)))
@@ -93,7 +126,8 @@ def _derive_weekly_scores(week_data: Dict[str, Any]) -> List[Tuple[str, float]]:
 
 def _build_standings_rows(week_data: Dict[str, Any], f_map: Dict[str, str]) -> List[Dict[str, Any]]:
     rows = week_data.get("standings_rows")
-    if isinstance(rows, list) and rows: return rows
+    if isinstance(rows, list) and rows:
+        return rows
     # fallback from weekly scores
     out = []
     for fid, pts in _derive_weekly_scores(week_data):
@@ -107,13 +141,16 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
     wrn = wr.get("weeklyResults") if isinstance(wr, dict) else {}
     players_map: Dict[str, Dict[str, Any]] = week_data.get("players_map") or {}
     franchises = (wrn or {}).get("franchise") or []
-    if isinstance(franchises, dict): franchises = [franchises]
+    if isinstance(franchises, dict):
+        franchises = [franchises]
     for fr in franchises or []:
         fid = str(fr.get("id") or "").zfill(4)
         # per-team player index
         f_pl = fr.get("players") or fr.get("player") or []
-        if isinstance(f_pl, dict): f_pl = f_pl.get("player") or f_pl
-        if isinstance(f_pl, dict): f_pl = [f_pl]
+        if isinstance(f_pl, dict):
+            f_pl = f_pl.get("player") or f_pl
+        if isinstance(f_pl, dict):
+            f_pl = [f_pl]
         fp_idx: Dict[str, Dict[str, Any]] = {}
         for p in (f_pl or []):
             pid = str(p.get("id") or "").strip()
@@ -143,34 +180,64 @@ def _extract_starters_by_franchise(week_data: Dict[str, Any]) -> Dict[str, List[
     return out
 
 def _derive_vp_drama(standings: List[Dict[str, Any]]) -> Dict[str, Any]:
-    if not standings: return {}
+    if not standings:
+        return {}
     rows = sorted(standings, key=lambda r: (-_safe_float(r.get("vp")), -_safe_float(r.get("pf"))))
     mids = [r for r in rows if _safe_float(r.get("vp")) == 2.5]
     lows = [r for r in rows if _safe_float(r.get("vp")) == 0.0]
-    if not mids or not lows: return {}
-    last_in = mids[-1]; first_out = lows[0]
+    if not mids or not lows:
+        return {}
+    last_in = mids[-1]
+    first_out = lows[0]
     gap = round(_safe_float(last_in["pf"]) - _safe_float(first_out["pf"]), 2)
-    return {"villain": last_in["name"], "bubble": first_out["name"], "gap_pf": gap, "top5": rows[:5], "sixth": rows[5] if len(rows) > 5 else None}
+    return {
+        "villain": last_in["name"],
+        "bubble": first_out["name"],
+        "gap_pf": gap,
+        "top5": rows[:5],
+        "sixth": rows[5] if len(rows) > 5 else None,
+    }
 
-def _derive_headliners(starters_by_franchise: Dict[str, List[Dict[str, Any]]],
-                       players_map: Dict[str, Dict[str, Any]],
-                       f_map: Dict[str, str],
-                       top_n: int = 10) -> List[Dict[str, Any]]:
+def _derive_headliners(
+    starters_by_franchise: Dict[str, List[Dict[str, Any]]],
+    players_map: Dict[str, Dict[str, Any]],
+    f_map: Dict[str, str],
+    top_n: int = 10,
+) -> List[Dict[str, Any]]:
     use: Dict[str, Dict[str, Any]] = {}
     for fid, rows in (starters_by_franchise or {}).items():
         who = f_map.get(fid, f"Team {fid}")
         for r in rows:
             pid = str(r.get("player_id") or "").strip()
-            if not pid: continue
+            if not pid:
+                continue
             pts = _safe_float(r.get("pts"), 0.0)
             pm = players_map.get(pid, {})
             name = (r.get("player") or pm.get("first_last") or pm.get("raw") or pid).strip()
             pos = (r.get("pos") or pm.get("pos") or "").strip()
             team = (r.get("team") or pm.get("team") or "").strip()
-            bucket = use.setdefault(pid, {"player": name, "pos": pos, "team": team, "pts": pts, "managers": set()})
+            bucket = use.setdefault(
+                pid,
+                {
+                    "player": name,
+                    "pos": pos,
+                    "team": team,
+                    "pts": pts,
+                    "managers": set(),
+                },
+            )
             bucket["pts"] = max(bucket["pts"], pts)
             bucket["managers"].add(who)
-    rows = [{"player": v["player"], "pos": v["pos"], "team": v["team"], "pts": v["pts"], "managers": sorted(v["managers"])} for v in use.values()]
+    rows = [
+        {
+            "player": v["player"],
+            "pos": v["pos"],
+            "team": v["team"],
+            "pts": v["pts"],
+            "managers": sorted(v["managers"]),
+        }
+        for v in use.values()
+    ]
     rows.sort(key=lambda x: -x["pts"])
     return rows[:top_n]
 
@@ -183,14 +250,16 @@ def _confidence_summary(conf3: List[Dict[str, Any]], team_prob: Dict[str, float]
     scored: List[Tuple[str, float]] = []
     for row in conf3:
         for g in row.get("top3", []):
-            t = _mfl_code_to_odds(str(g.get("pick","")))
-            if not t: continue
+            t = _mfl_code_to_odds(str(g.get("pick", "")))
+            if not t:
+                continue
             all_picks.append(t)
             prob = float(team_prob.get(t, 0.5))
             scored.append((t, prob))
     boring = None
     if all_picks:
         from collections import Counter
+
         c = Counter(all_picks)
         boring = sorted(c.items(), key=lambda x: (-x[1], x[0]))[0][0]
     boldest = None
@@ -200,10 +269,13 @@ def _confidence_summary(conf3: List[Dict[str, Any]], team_prob: Dict[str, float]
     return {"boring_pick": boring, "boldest_pick": boldest}
 
 def _survivor_summary(surv: List[Dict[str, Any]], team_prob: Dict[str, float]) -> Dict[str, Any]:
-    if not surv: return {}
-    picks = [ _mfl_code_to_odds(r.get("pick","")) for r in surv if r.get("pick") ]
-    if not picks: return {"boring_consensus": None, "boldest_lifeline": None}
+    if not surv:
+        return {}
+    picks = [_mfl_code_to_odds(r.get("pick", "")) for r in surv if r.get("pick")]
+    if not picks:
+        return {"boring_consensus": None, "boldest_lifeline": None}
     from collections import Counter
+
     c = Counter(picks)
     boring = sorted(c.items(), key=lambda x: (-x[1], x[0]))[0][0]
     boldest = sorted(picks, key=lambda t: team_prob.get(t, 0.5))[0]
@@ -217,7 +289,14 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--out-dir", default=os.environ.get("NPFFL_OUTDIR", "build"))
     return ap.parse_args()
 
-def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
+def generate_newsletter(
+    cfg: Dict[str, Any], week: int, out_dir: Path
+) -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
+    """
+    Generate the weekly newsletter.  This function fetches data from MyFantasyLeague,
+    computes values and standings, updates the season history, and then renders
+    the Barstool-style newsletter using the narrative engine and Jinja templates.
+    """
     league_id = str(cfg.get("league_id") or os.environ.get("MFL_LEAGUE_ID") or "").strip()
     year = int(cfg.get("year") or os.environ.get("MFL_YEAR") or 2025)
     tz = cfg.get("timezone") or cfg.get("tz") or "America/New_York"
@@ -232,7 +311,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     history_dir = Path(history_dir_cfg) if history_dir_cfg else Path("data") / "history"
     history_dir.mkdir(parents=True, exist_ok=True)
 
-    # client
+    # instantiate MFL client (trying various arg names for timezone)
     try:
         client = MFLClient(league_id=league_id, year=year, tz=tz)
     except TypeError:
@@ -244,7 +323,11 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
             setattr(client, "timezone", tz)
 
     week_data: Dict[str, Any] = fetch_week_data(client, week=week) or {}
-    f_names = _merge_franchise_names(week_data.get("franchise_names"), getattr(client, "franchise_names", None), cfg.get("franchise_names"))
+    f_names = _merge_franchise_names(
+        week_data.get("franchise_names"),
+        getattr(client, "franchise_names", None),
+        cfg.get("franchise_names"),
+    )
 
     # Weekly bits
     standings_rows = _build_standings_rows(week_data, f_names)
@@ -266,15 +349,22 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     # Scores list for history + narrative
     weekly_scores_pairs = _derive_weekly_scores(week_data)  # [(fid, pts)]
     scores_info = {
-        "rows": sorted([(f_names.get(fid, f"Team {fid}"), pts) for fid, pts in weekly_scores_pairs], key=lambda t:-t[1]),
-        "avg": round(sum(pts for _, pts in weekly_scores_pairs)/len(weekly_scores_pairs), 2) if weekly_scores_pairs else None,
+        "rows": sorted(
+            [(f_names.get(fid, f"Team {fid}"), pts) for fid, pts in weekly_scores_pairs],
+            key=lambda t: -t[1],
+        ),
+        "avg": round(sum(pts for _, pts in weekly_scores_pairs) / len(weekly_scores_pairs), 2)
+        if weekly_scores_pairs
+        else None,
     }
 
     # VP drama (also include 5th vs 6th)
     vp_drama = _derive_vp_drama(standings_rows)
 
     # Headliners
-    headliners = _derive_headliners(starters_by_franchise, players_map, f_names, top_n=10)
+    headliners = _derive_headliners(
+        starters_by_franchise, players_map, f_names, top_n=10
+    )
 
     # Pools + odds
     pool_nfl = week_data.get("pool_nfl") or {}
@@ -283,23 +373,30 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     conf3 = []
     node = (pool_nfl.get("poolPicks") or {})
     franchises = node.get("franchise") or []
-    if isinstance(franchises, dict): franchises = [franchises]
+    if isinstance(franchises, dict):
+        franchises = [franchises]
     for fr in franchises:
         fid = str(fr.get("id") or "").zfill(4)
         name = f_names.get(fid, f"Team {fid}")
         wk_blocks = fr.get("week") or []
-        if isinstance(wk_blocks, dict): wk_blocks = [wk_blocks]
+        if isinstance(wk_blocks, dict):
+            wk_blocks = [wk_blocks]
         target = None
         for w in wk_blocks:
             if str(w.get("week") or "") == str(week):
-                target = w; break
-        if not target: continue
+                target = w
+                break
+        if not target:
+            continue
         games = target.get("game") or []
-        if isinstance(games, dict): games = [games]
+        if isinstance(games, dict):
+            games = [games]
         picks = []
         for g in games:
-            try: rank = int(str(g.get("rank") or "0"))
-            except Exception: rank = 0
+            try:
+                rank = int(str(g.get("rank") or "0"))
+            except Exception:
+                rank = 0
             picks.append({"rank": rank, "pick": str(g.get("pick") or "").strip()})
         picks.sort(key=lambda r: -r["rank"])
         conf3.append({"team": name, "top3": picks[:3]})
@@ -308,17 +405,20 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     survivor_list = []
     node = (survivor_pool.get("survivorPool") or survivor_pool or {})
     franchises = node.get("franchise") or []
-    if isinstance(franchises, dict): franchises = [franchises]
+    if isinstance(franchises, dict):
+        franchises = [franchises]
     surv_no = []
     for fr in franchises:
         fid = str(fr.get("id") or "").zfill(4)
         name = f_names.get(fid, f"Team {fid}")
         wk_blocks = fr.get("week") or []
-        if isinstance(wk_blocks, dict): wk_blocks = [wk_blocks]
+        if isinstance(wk_blocks, dict):
+            wk_blocks = [wk_blocks]
         pick = ""
         for w in wk_blocks:
             if str(w.get("week") or "") == str(week):
-                pick = str(w.get("pick") or "").strip(); break
+                pick = str(w.get("pick") or "").strip()
+                break
         if pick:
             survivor_list.append({"team": name, "pick": pick})
         else:
@@ -349,7 +449,6 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         except Exception as exc:
             print(f"[history] Failed to fetch week {wk}: {exc}")
             continue
-
         wk_fnames = _merge_franchise_names(
             wk_data.get("franchise_names"),
             getattr(client, "franchise_names", None),
@@ -359,7 +458,6 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         if not wk_scores:
             print(f"[history] No scores found for week {wk}; skipping")
             continue
-
         wk_starters = _extract_starters_by_franchise(wk_data)
         wk_players = wk_data.get("players_map") or wk_data.get("players") or {}
         try:
@@ -367,7 +465,6 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         except Exception as exc:
             print(f"[history] Salary load failed for week {wk}: {exc}; reusing current sheet")
             wk_salary_df = salaries_df
-
         wk_values = compute_values(
             wk_salary_df,
             wk_players,
@@ -377,7 +474,6 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
             year=year,
         )
         wk_eff = wk_values.get("team_efficiency", [])
-
         update_history(
             history,
             year=year,
@@ -401,7 +497,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         team_efficiency=team_efficiency,
     )
     save_history(history, history_dir)
-    season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, burn_rate_pct, ppk
+    season_table = build_season_rankings(history)
 
     assets_cfg = cfg.get("assets") or {}
     logos_dir_cfg = assets_cfg.get("logos_dir") or "assets/franchises"
@@ -427,7 +523,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         "scores_info": scores_info,
         "vp_drama": vp_drama,
         "headliners": headliners,
-        "starters_by_franchise": starters_by_franchise,  # for Fantasy Jail
+        "starters_by_franchise": starters_by_franchise,
         # pools
         "confidence_top3": conf3,
         "team_prob": team_prob,
@@ -442,6 +538,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         "assets": assets_payload,
     }
 
+    # Write context for debugging
     try:
         (out_dir / f"context_week_{_week_label(week)}.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -449,84 +546,71 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     except Exception:
         pass
 
-    outputs = render_newsletter(payload, output_dir=str(out_dir), week=week)
-    paths = [p for p in (outputs.get("md_path"), outputs.get("html_path")) if p]
-    if paths:
-        for p in paths: print(f"Wrote: {p}")
-        return tuple(Path(p) for p in paths)  # type: ignore[return-value]
+    # --------------------------------------------------------------------------------
+    # Build the WeekBundle for Barstool narrative
+    # Create mapping from fid to manager name (f_names maps fid->manager)
+    fid_name_map = {fid: f_names.get(fid, f"Team {fid}") for fid, _ in weekly_scores_pairs}
+    teams_list = [{"team_id": fid, "name": name} for fid, name in fid_name_map.items()]
+    scores_list = [
+        {
+            "team_id": fid,
+            "points": pts,
+            "rank": 0,
+            "salary_spent": 0.0,
+            "proj_next_week": 0.0,
+        }
+        for fid, pts in weekly_scores_pairs
+    ]
+    vp_table = [
+        {
+            "team_id": str(row.get("id") or row.get("team_id")),
+            "vp_cutoff_diff": 0.0,
+            "got_2p5": _safe_float(row.get("vp"), 0.0) >= 2.5,
+        }
+        for row in standings_rows or []
+    ]
+    week_bundle = {
+        "week": week,
+        "timezone": tz,
+        "drop_time_et": _cfg_get(cfg, "newsletter.drop_time_et", "12:00 PM"),
+        "teams": teams_list,
+        "scores": scores_list,
+        "vp_table": vp_table,
+        "picks_conf": [],
+        "picks_survivor": [],
+        "player_perf": [],
+        "chalk_busts": [],
+        "value_hits": [],
+    }
+    season_year = int(cfg.get("year") or payload.get("year") or 2025)
+    nar = build_narratives(week_bundle, season=season_year, state_dir="state")
+    ctx = {
+        "week": {
+            "week": week_bundle["week"],
+            "timezone": week_bundle["timezone"],
+            "drop_time_et": week_bundle["drop_time_et"],
+        },
+        "scores": week_bundle["scores"],
+        "teams_by_id": {t["team_id"]: t["name"] for t in week_bundle["teams"]},
+        "nar": nar,
+    }
+    env = Environment(
+        loader=FileSystemLoader("render/templates"),
+        autoescape=select_autoescape(["html", "xml"]),
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+    week_lbl = _week_label(week)
+    html_text = env.get_template("newsletter.html.j2").render(**ctx)
+    txt_text = env.get_template("newsletter.txt.j2").render(**ctx)
+    html_path = out_dir / f"NPFFL_Week_{week_lbl}.html"
+    md_path = out_dir / f"NPFFL_Week_{week_lbl}.md"
+    html_path.write_text(html_text, encoding="utf-8")
+    md_path.write_text(txt_text, encoding="utf-8")
+    print(f"Wrote: {md_path}")
+    print(f"Wrote: {html_path}")
+    return (md_path, html_path)
 
-    stub = out_dir / f"week_{_week_label(week)}.md"
-    stub.write_text("# Newsletter\n\n_No content produced._\n", encoding="utf-8")
-    print(f"Wrote: {stub}")
-    return (stub,)
-
-from transform.league_narratives import build_narratives
-from pathlib import Path
-# ... existing code ...
-week_bundle = {
-    "week": week,
-    "timezone": payload.get("timezone", "America/New_York"),
-    "drop_time_et": payload.get("config", {}).get("drop_time_et", "12:00 PM"),
-    "teams": [{"team_id": f, "name": name} for f, name in f_map.items()],
-    "scores": [{"team_id": row["id"], "points": row["pf"], "salary_spent": 0.0, "proj_next_week": 0.0} for row in season_table],
-    "vp_table": [{"team_id": row["id"], "vp_cutoff_diff": row.get("vp_diff", 0.0), "got_2p5": row["vp"] >= 2.5} for row in season_table],
-    "picks_conf": [],  # fill from your payload if needed
-    "picks_survivor": [],  # fill from your payload if needed
-    "player_perf": [],  # list of player performances
-    "chalk_busts": [],  # fill with high‑owned players scoring <=4 points
-    "value_hits": [],   # fill with low‑salary players scoring well
-}
-narratives = build_narratives(week_bundle, season=2025, state_dir="state")
-
-# Convert week to a two-digit label (e.g. "02")
-week_label = _week_label(week)
-
-# Use your season_table or standings to build the 'teams' and 'scores' lists.
-# 'season_table' in your code contains id/name/pf/vp for each team.
-teams_list = []
-scores_list = []
-for row in season_table:
-    # row["id"] is a 4-digit string like "0001"
-    teams_list.append({"team_id": row["id"], "name": row.get("name")})
-    scores_list.append({
-        "team_id": row["id"],
-        "points": row.get("pf", 0.0),
-        # You can fill salary_spent and proj_next_week if you have those metrics;
-        # otherwise supply 0.0 so the field exists.
-        "salary_spent": 0.0,
-        "proj_next_week": 0.0,
-    })
-
-vp_table = []
-for row in season_table:
-    vp_table.append({
-        "team_id": row["id"],
-        # If you track the point-difference from the VP cutoff, put it here; otherwise 0.0
-        "vp_cutoff_diff": 0.0,
-        # 'got_2p5' = True when VP >= 2.5; adjust threshold if needed
-        "got_2p5": float(row.get("vp", 0.0)) >= 2.5,
-    })
-
-week_bundle = {
-    "week": week,
-    "timezone": payload.get("timezone", "America/New_York"),
-    # Your config may have a drop time (when the newsletter is sent); default to noon ET
-    "drop_time_et": payload.get("config", {}).get("drop_time_et", "12:00 PM"),
-    "teams": teams_list,
-    "scores": scores_list,
-    "vp_table": vp_table,
-    # These can be filled later from your payload (e.g. confidence picks, survivor picks)
-    "picks_conf": [],
-    "picks_survivor": [],
-    # These can remain empty or be populated from your payload's player stats
-    "player_perf": [],
-    "chalk_busts": [],   # fill with top busts if you want the “Chalk busts” section populated
-    "value_hits": [],    # fill with good value plays if desired
-}
-
-# Use the current season (e.g. 2025) or derive from payload
-season_year = payload.get("season") or 2025
-nar = build_narratives(week_bundle, season=season_year, state_dir="state")
 
 def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     args = _parse_args()
@@ -534,6 +618,7 @@ def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     week = args.week if args.week is not None else int(cfg.get("week") or 1)
     out_dir = Path(_cfg_get(cfg, "outputs.dir") or args.out_dir)
     return generate_newsletter(cfg, week, out_dir)
+
 
 if __name__ == "__main__":
     main()
