@@ -18,6 +18,27 @@ def _collapse(items: List[str], n: int) -> List[str]:
 # Weekly Results
 # ===================
 
+_WEEKLY_LEAD_LINES = [
+    "**{top}** set the pace at **{top_pts}** while **{bot}** limped home at **{bot_pts}**",
+    "**{top}** posted the high-water mark at **{top_pts}**; **{bot}** stalled at **{bot_pts}**",
+    "Scoreboard crown: **{top}** on **{top_pts}** with **{bot}** stuck at **{bot_pts}**",
+    "**{top}** ran hot with **{top_pts}** and left **{bot}** to wear **{bot_pts}**",
+]
+
+_WEEKLY_MID_LINES = [
+    "{chasers} stayed within shouting distance as the middle jammed up",
+    "{chasers} kept the chase pack noisy behind the leader",
+    "{chasers} made sure nobody relaxed in the middle tier",
+    "{chasers} refused to give the front-runner any breathing room",
+]
+
+_WEEKLY_CHAOS_LINES = [
+    "The heart of the slate lived between **{band_low}–{band_high}** — every slot mattered",
+    "Everything between **{band_low}–{band_high}** felt like rush hour — thin edges everywhere",
+    "With most scores in the **{band_low}–{band_high}** window, tiny swings decided fates",
+    "**{band_low}–{band_high}** was the real mosh pit — survive there and you cashed",
+]
+
 def weekly_results_blurb(scores: Dict[str, Any], tone: Tone) -> str:
     rows = scores.get("rows") or []
     if not rows: return ""
@@ -29,10 +50,21 @@ def weekly_results_blurb(scores: Dict[str, Any], tone: Tone) -> str:
     band_high = f"{min(max(pts_only), median+5):.2f}" if pts_only else f"{median:.2f}"
     chasers = ", ".join([t for t,_ in rows[1:6]]) if len(rows) > 6 else ", ".join([t for t,_ in rows[1:]])
 
+    chaser_text = chasers or "The chase pack"
+
     pb = ProseBuilder(tone)
-    lead  = pb.sentence(f"**{top_team}** set the pace at **{_fmt2(top_pts)}** while **{bot_team}** limped home at **{_fmt2(bot_pts)}**")
-    mid   = pb.sentence(f"{chasers} stayed within shouting distance as the middle jammed up")
-    chaos = pb.sentence(f"The heart of the slate lived between **{band_low}–{band_high}** — every slot mattered")
+    lead_tmpl = pb.choose(_WEEKLY_LEAD_LINES, unique=True)
+    mid_tmpl = pb.choose(_WEEKLY_MID_LINES, unique=True)
+    chaos_tmpl = pb.choose(_WEEKLY_CHAOS_LINES, unique=True)
+
+    lead = pb.sentence(lead_tmpl.format(
+        top=top_team,
+        bot=bot_team,
+        top_pts=_fmt2(top_pts),
+        bot_pts=_fmt2(bot_pts),
+    ))
+    mid = pb.sentence(mid_tmpl.format(chasers=chaser_text))
+    chaos = pb.sentence(chaos_tmpl.format(band_low=band_low, band_high=band_high))
     return pb.paragraph(lead, mid, chaos)
 
 def weekly_results_roast(tone: Tone) -> str:
