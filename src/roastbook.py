@@ -581,6 +581,37 @@ def chalk_leverage_roast(tone: Tone) -> str:
 # One-liners per team (Around the League)
 # ===================
 
+_ATL_TEMPLATES_100 = [
+    "{name} didn’t just clear the bar—they raised it to **{score}**",
+    "{name} lit the room up at **{score}** and never cooled down",
+    "Whatever playlist {name} used worked—they owned the night at **{score}**",
+]
+_ATL_TEMPLATES_90 = [
+    "{name} kept the speakers loud at **{score}**",
+    "Every bottle pop had {name}’s name on it at **{score}**",
+    "{name} two-stepped past the field with **{score}**",
+]
+_ATL_TEMPLATES_80 = [
+    "{name} stayed on the floor at **{score}**",
+    "{name} kept the lights up with **{score}**",
+    "{name} left just enough room on the dance floor at **{score}**",
+]
+_ATL_TEMPLATES_LOW = [
+    "{name} paid cover and stared at **{score}**",
+    "{name} found the lull in the playlist at **{score}**",
+    "{name} left the dance floor early at **{score}**",
+]
+
+
+def _atl_templates_for_score(pts: float) -> List[str]:
+    if pts >= 100:
+        return _ATL_TEMPLATES_100
+    if pts >= 90:
+        return _ATL_TEMPLATES_90
+    if pts >= 80:
+        return _ATL_TEMPLATES_80
+    return _ATL_TEMPLATES_LOW
+
 def around_the_league_lines(franchise_names: Dict[str,str], scores_info: Dict[str,Any], week: int, tone: Tone, n: int = 7) -> List[str]:
     """
     Rotate teams weekly: deterministic slice based on week index.
@@ -598,13 +629,8 @@ def around_the_league_lines(franchise_names: Dict[str,str], scores_info: Dict[st
     pb = ProseBuilder(tone)
     out = []
     for name, pts in picks:
-        if pts >= 100:
-            line = pb.sentence(f"{name} didn’t just clear the bar—they raised it to **{_fmt2(pts)}**")
-        elif pts >= 90:
-            line = pb.sentence(f"{name} kept the speakers loud at **{_fmt2(pts)}**")
-        elif pts >= 80:
-            line = pb.sentence(f"{name} stayed on the floor at **{_fmt2(pts)}**")
-        else:
-            line = pb.sentence(f"{name} paid cover and stared at **{_fmt2(pts)}**")
-        out.append(line)
+        templates = _atl_templates_for_score(float(pts))
+        template = pb.choose(templates)
+        line = template.format(name=name, score=_fmt2(pts))
+        out.append(pb.sentence(line))
     return out
