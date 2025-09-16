@@ -1,228 +1,75 @@
 <!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <title>{{ bundle.title or "NPFFL Weekly Roast" }} — Week {{ bundle.week_label }}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <style>
-      :root {
-        --fg: #111;
-        --bg: #f8fafc;
-        --muted: #6b7280;
-        --card: #ffffff;
-        --accent: #e11d48;
-        --line: #e5e7eb;
-      }
-      html, body {
-        margin: 0;
-        padding: 0;
-        background: var(--bg);
-        color: var(--fg);
-        font: 16px/1.6 "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      }
-      .page {
-        max-width: 880px;
-        margin: 2rem auto 4rem;
-        padding: 0 1.25rem;
-      }
-      header {
-        margin-bottom: 1.5rem;
-      }
-      header h1 {
-        margin: 0;
-        font-size: 2.25rem;
-        line-height: 1.2;
-      }
-      header .meta {
-        margin-top: 0.25rem;
-        color: var(--muted);
-        font-size: 0.95rem;
-      }
-      section {
-        margin-bottom: 2.5rem;
-      }
-      h2 {
-        margin: 0 0 0.75rem;
-        font-size: 1.65rem;
-      }
-      h3 {
-        margin: 1.25rem 0 0.5rem;
-        font-size: 1.1rem;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--muted);
-      }
-      .muted {
-        color: var(--muted);
-        font-size: 0.9rem;
-      }
-      ul {
-        list-style: none;
-        padding: 0;
-        margin: 0;
-      }
-      li {
-        margin: 0.4rem 0;
-        padding: 0.6rem 0.75rem;
-        background: var(--card);
-        border-radius: 10px;
-        border: 1px solid var(--line);
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
-      }
-      li strong {
-        color: var(--fg);
-      }
-      .grid {
-        display: grid;
-        gap: 1rem;
-      }
-      @media (min-width: 640px) {
-        .grid.two {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-      }
-      .footer {
-        margin-top: 3rem;
-        color: var(--muted);
-        font-size: 0.9rem;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="page">
-      <header>
-        <h1>{{ bundle.title or "NPFFL Weekly Roast" }}</h1>
-        <div class="meta">
-          Week {{ bundle.week_label }}{% if bundle.timezone %} · {{ bundle.timezone }}{% endif %}
-        </div>
-      </header>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>NPFFL Weekly — Week {{ week.week }}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    h1 { margin: 0 0 8px; }
+    h2 { margin-top: 28px; border-bottom: 1px solid #eee; padding-bottom: 4px; }
+    .pill { display:inline-block;padding:2px 8px;border-radius:12px;background:#f3f4f6;font-size:12px;margin-left:8px;}
+    .grid { display:grid; gap:10px; grid-template-columns: repeat(auto-fit, minmax(260px,1fr)); }
+    .card { border:1px solid #eee; border-radius:12px; padding:12px; }
+    ul { margin:8px 0 0 20px; }
+    .muted { color:#666; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>NPFFL Weekly Newsletter <span class="pill">Week {{ week.week }}</span></h1>
+  <div class="muted">Drop hits Tuesdays at {{ week.drop_time_et }} ({{ week.timezone }})</div>
 
-      {% set narrative = narrative or {} %}
+  <h2>Quick Hits</h2>
+  <ul>
+    {% for line in nar.quick_hits %}<li>{{ line }}</li>{% endfor %}
+  </ul>
 
-      {% set dump = narrative.dumpster_fire %}
-      {% if dump and dump.tiers %}
-      <section id="dumpster-fire">
-        <h2>Dumpster Fire Watch</h2>
-        {% if dump.average %}
-        <p class="muted">League average score: {{ '%.2f'|format(dump.average) }}</p>
-        {% endif %}
-        {% for tier in dump.tiers %}
-          <h3>{{ tier.label }}</h3>
-          <ul>
-            {% for entry in tier.entries %}
-              <li><strong>{{ entry.team }}</strong> — {{ entry.blurb }}</li>
-            {% endfor %}
-          </ul>
-        {% endfor %}
-      </section>
-      {% endif %}
-
-      {% set fraud = narrative.fraud_watch %}
-      {% if fraud and fraud.entries %}
-      <section id="fraud-watch">
-        <h2>Fraud Watch</h2>
-        <ul>
-          {% for entry in fraud.entries %}
-            <li><strong>{{ entry.team }}</strong> — {{ entry.blurb }}</li>
-          {% endfor %}
-        </ul>
-      </section>
-      {% endif %}
-
-      {% set crime = narrative.vp_crime_scene %}
-      {% if crime and (crime.villain or crime.victim) %}
-      <section id="vp-crime">
-        <h2>VP Crime Scene</h2>
-        <ul>
-          {% if crime.villain %}
-            <li><strong>{{ crime.villain.team }}</strong> — {{ crime.villain.blurb }}</li>
-          {% endif %}
-          {% if crime.victim %}
-            <li><strong>{{ crime.victim.team }}</strong> — {{ crime.victim.blurb }}</li>
-          {% endif %}
-        </ul>
-      </section>
-      {% endif %}
-
-      {% set spotlight = narrative.spotlight %}
-      {% if spotlight %}
-      <section id="spotlight">
-        <h2>Sh*t Talk Spotlight</h2>
-        <ul>
-          {% if spotlight.top %}
-            <li><strong>{{ spotlight.top.team }}</strong> — {{ spotlight.top.blurb }}</li>
-          {% endif %}
-          {% if spotlight.bottom %}
-            <li><strong>{{ spotlight.bottom.team }}</strong> — {{ spotlight.bottom.blurb }}</li>
-          {% endif %}
-        </ul>
-        {% if spotlight.headliner %}
-          <p class="muted">{{ spotlight.headliner }}</p>
-        {% endif %}
-      </section>
-      {% endif %}
-
-      {% set vb = narrative.value_vs_busts %}
-      {% if vb and (vb.values or vb.busts) %}
-      <section id="values-busts">
-        <h2>Value vs Busts</h2>
-        <div class="grid two">
-          {% if vb.values %}
-          <div>
-            <h3>Values</h3>
-            <ul>
-              {% for entry in vb.values %}
-                <li>{{ entry.blurb }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-          {% if vb.busts %}
-          <div>
-            <h3>Busts</h3>
-            <ul>
-              {% for entry in vb.busts %}
-                <li>{{ entry.blurb }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-        </div>
-      </section>
-      {% endif %}
-
-      {% set pool = narrative.pool_report %}
-      {% if pool and (pool.confidence or pool.survivor) %}
-      <section id="pools">
-        <h2>Survivor &amp; Confidence Pools</h2>
-        <div class="grid two">
-          {% if pool.confidence %}
-          <div>
-            <h3>Confidence</h3>
-            <ul>
-              {% for line in pool.confidence %}
-                <li>{{ line }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-          {% if pool.survivor %}
-          <div>
-            <h3>Survivor</h3>
-            <ul>
-              {% for line in pool.survivor %}
-                <li>{{ line }}</li>
-              {% endfor %}
-            </ul>
-          </div>
-          {% endif %}
-        </div>
-      </section>
-      {% endif %}
-
-      <div class="footer">
-        Generated automatically. No mercy, just math.
+  <h2>Weekly Results</h2>
+  <div class="grid">
+    {% for s in scores|sort(attribute="points", reverse=True) %}
+      <div class="card">
+        <strong>{{ teams_by_id[s.team_id] }}</strong><br/>
+        {{ "%.2f"|format(s.points) }} pts
+        {% if loop.first %} — 🔥 Top Dog{% endif %}
+        {% if loop.last %} — 🗑️ Basement{% endif %}
       </div>
-    </div>
-  </body>
+    {% endfor %}
+  </div>
+
+  <h2>Dumpster Fire of the Week</h2>
+  <div class="card">
+    <strong>{{ nar.dumpster_fire.name }}</strong> — {{ "%.2f"|format(nar.dumpster_fire.points) }} pts.<br/>
+    {{ nar.dumpster_fire.line }}
+  </div>
+
+  {% if nar.fraud_watch %}
+  <h2>Fraud Watch</h2>
+  <div class="card">
+    <strong>{{ nar.fraud_watch.name }}</strong> projects {{ "%.1f"|format(nar.fraud_watch.proj_next_week) }} next week.<br/>
+    {{ nar.fraud_watch.line }}
+  </div>
+  {% endif %}
+
+  {% if nar.vp_crime_scene %}
+  <h2>VP Crime Scene</h2>
+  <div class="card">
+    <strong>{{ nar.vp_crime_scene.name }}</strong> missed 2.5 VP by {{ "%.2f"|format(nar.vp_crime_scene.diff) }}.<br/>
+    {{ nar.vp_crime_scene.line }}
+  </div>
+  {% endif %}
+
+  {% if nar.talk_spotlight %}
+  <h2>Sh*t Talk Spotlight</h2>
+  <div class="card">
+    <strong>{{ nar.talk_spotlight.name }}</strong>: {{ nar.talk_spotlight.tag }}<br/>
+    <ul>
+      {% for b in nar.talk_spotlight.busts %}
+        <li>Chalk bust: {{ b.player }} ({{ "%.1f"|format(b.pts) }} pts)</li>
+      {% endfor %}
+    </ul>
+    <em>“{{ nar.talk_spotlight.quote }}”</em>
+  </div>
+  {% endif %}
+
+  <div class="muted">Generated automatically — DFS blog vibe, league roast energy.</div>
+</body>
 </html>
