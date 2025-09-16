@@ -91,11 +91,27 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     features = payload.get("features") or {}
     include_around_league = bool(features.get("around_league", False))
 
+    has_vp_drama = bool(payload.get("vp_drama"))
+    has_headliners = bool(headliners)
+    has_confidence = bool(conf3 or conf_no)
+    has_survivor = bool(surv or surv_no)
+
     from . import roastbook as rb
     from .prose import ProseBuilder
 
     tone = rb.Tone(tone_name)
     pb_intro = ProseBuilder(tone)
+
+    around_lines: List[str] | None = None
+    around_lines_error = False
+    if include_around_league:
+        try:
+            around_lines = rb.around_the_league_lines(
+                f_map, scores, week=week_num, tone=tone, n=7
+            )
+        except Exception:
+            around_lines_error = True
+            around_lines = None
 
     def _safe_float(val: Any) -> float | None:
         try:
@@ -226,6 +242,26 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             intro_pick += "\n"
         out.append(intro_pick)
 
+    toc_lines: List[str] = ["- [Weekly Results](#weekly-results)"]
+    if has_vp_drama:
+        toc_lines.append("- [VP Drama](#vp-drama)")
+    if has_headliners:
+        toc_lines.append("- [Headliners](#headliners)")
+    toc_lines.append("- [Value vs. Busts](#value-vs-busts)")
+    toc_lines.append("- [Power Vibes (Season-to-Date)](#power-vibes-season-to-date)")
+    if has_confidence:
+        toc_lines.append("- [Confidence Pick’em](#confidence-pickem)")
+    if has_survivor:
+        toc_lines.append("- [Survivor Pool](#survivor-pool)")
+    if around_lines:
+        toc_lines.append("- [Around the League](#around-the-league)")
+
+    if toc_lines:
+        if out and out[-1].strip():
+            out.append("")
+        out.extend(toc_lines)
+        out.append("")
+
     # 1) Weekly Results  (intro → mini visual: Chalk&Leverage → roast)
     try:
         out.append("## Weekly Results")
@@ -317,14 +353,12 @@ def _mk_md(payload: Dict[str, Any]) -> str:
 
     # 8) Around the League — DISABLED for this issue (opt-in later via features.around_league: true)
     if include_around_league:
-        try:
-            lines = rb.around_the_league_lines(f_map, scores, week=week_num, tone=tone, n=7)
-            if lines:
-                out.append("## Around the League")
-                out.extend([f"- {ln}" for ln in lines])
-                out.append("")
-        except Exception:
+        if around_lines_error:
             out.append("_Around the League unavailable._")
+        elif around_lines:
+            out.append("## Around the League")
+            out.extend([f"- {ln}" for ln in around_lines])
+            out.append("")
 
     return "\n".join(out)
 
