@@ -92,12 +92,139 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     include_around_league = bool(features.get("around_league", False))
 
     from . import roastbook as rb
+    from .prose import ProseBuilder
+
     tone = rb.Tone(tone_name)
+    pb_intro = ProseBuilder(tone)
+
+    def _safe_float(val: Any) -> float | None:
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return None
+
+    def _join_names(names: List[str]) -> str:
+        clean = [str(n).strip() for n in names if n and str(n).strip()]
+        if not clean:
+            return ""
+        if len(clean) == 1:
+            return clean[0]
+        if len(clean) == 2:
+            return f"{clean[0]} and {clean[1]}"
+        return f"{clean[0]}, {clean[1]}, and {clean[2]}"
+
+    score_rows = []
+    for row in scores.get("rows") or []:
+        if isinstance(row, (list, tuple)) and len(row) >= 2:
+            team = str(row[0]).strip()
+            score_rows.append((team, row[1]))
+        elif isinstance(row, dict):
+            team = (row.get("team") or row.get("name") or "").strip()
+            pts = row.get("pts") or row.get("points")
+            if team and pts is not None:
+                score_rows.append((team, pts))
+    def _score_sort_key(row: Any) -> float:
+        val = _safe_float(row[1])
+        return val if val is not None else float("-inf")
+
+    score_rows.sort(key=_score_sort_key, reverse=True)
+
+    avg_score = _safe_float(scores.get("avg"))
+    top_score_line = ""
+    bottom_score_line = ""
+    if score_rows:
+        top_team, top_pts_raw = score_rows[0]
+        if top_team:
+            avg_clause = f" on a league average of **{_fmt2(avg_score)}**" if avg_score is not None else ""
+            try:
+                top_pts = _fmt2(top_pts_raw)
+            except Exception:
+                top_pts = str(top_pts_raw)
+            top_score_line = pb_intro.sentence(
+                f"**{top_team}** lit the slate at **{top_pts}**{avg_clause}"
+            )
+        if len(score_rows) > 1:
+            bottom_team, bottom_raw = score_rows[-1]
+            if bottom_team and _safe_float(bottom_raw) is not None:
+                bottom_score_line = pb_intro.sentence(
+                    f"**{bottom_team}** is nursing that **{_fmt2(bottom_raw)}** finish"
+                )
+
+    leaders_line = ""
+    if season_rank:
+        leaders = [r.get("team") for r in season_rank[:3] if isinstance(r, dict) and r.get("team")]
+        joined = _join_names(leaders)
+        if joined:
+            leaders_line = pb_intro.sentence(
+                f"Power Vibes still run through **{joined}**"
+            )
+
+    headliner_line = ""
+    for h in headliners:
+        if not isinstance(h, dict):
+            continue
+        player = (h.get("player") or "").strip()
+        managers = h.get("managers") or []
+        manager = ""
+        if isinstance(managers, list) and managers:
+            manager = str(managers[0]).strip()
+        elif isinstance(managers, str):
+            manager = managers.strip()
+        pts_val = _safe_float(h.get("pts"))
+        if player and manager and pts_val is not None:
+            headliner_line = pb_intro.sentence(
+                f"**{player}** handed **{manager}** **{_fmt2(pts_val)}** fantasy points to flex"
+            )
+            break
+
+    closer_options = [
+        pb_intro.sentence("Drop hits every Tuesday at noon ET"),
+        pb_intro.sentence("We publish every Tuesday at noon ET"),
+        pb_intro.sentence("Circle Tuesday at noon ET for the drop"),
+    ]
+    closer_line = pb_intro.choose(closer_options)
+
+    intro_templates: List[str] = [
+        "> **New format!** Same DFS chaos, tighter recap, louder voice. This one’s late because the editor tried to stream All-22 from an airport lounge. We’ll be on time going forward — posting **every Tuesday at noon ET**.",
+    ]
+
+    if top_score_line:
+        score_lines = [
+            pb_intro.sentence("Same DFS chaos, louder mic."),
+            top_score_line,
+        ]
+        if bottom_score_line:
+            score_lines.append(bottom_score_line)
+        score_lines.append(closer_line)
+        intro_templates.append("> " + pb_intro.paragraph(*score_lines))
+
+    if leaders_line:
+        leader_lines = [
+            pb_intro.sentence("New wrapper, same obsession with scoreboard flexes."),
+            leaders_line,
+            closer_line,
+        ]
+        intro_templates.append("> " + pb_intro.paragraph(*leader_lines))
+
+    if headliner_line:
+        headliner_lines = [
+            pb_intro.sentence("DFS degenerates, this one’s for you."),
+            headliner_line,
+            closer_line,
+        ]
+        intro_templates.append("> " + pb_intro.paragraph(*headliner_lines))
+
+    intro_templates = list(dict.fromkeys(tpl for tpl in intro_templates if tpl.strip()))
+    intro_pick = pb_intro.choose(intro_templates)
 
     out: List[str] = []
     # Intro blurb (new)
     out.append(f"# {title} — Week {week_label}\n")
-    out.append("> **New format!** Same DFS chaos, tighter recap, louder voice. This one’s late because the editor tried to stream All-22 from an airport lounge. We’ll be on time going forward — posting **every Tuesday at noon ET**.\n")
+    if intro_pick:
+        intro_pick = intro_pick.rstrip()
+        if not intro_pick.endswith("\n"):
+            intro_pick += "\n"
+        out.append(intro_pick)
 
     # 1) Weekly Results  (intro → mini visual: Chalk&Leverage → roast)
     try:
