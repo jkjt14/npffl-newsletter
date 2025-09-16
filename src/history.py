@@ -38,7 +38,12 @@ def update_history(
     weekly_scores: List[Tuple[str, float]],
     team_efficiency: List[Dict[str, Any]],
 ) -> None:
+    history.setdefault("meta", {})
     history["meta"]["year"] = year
+    try:
+        salary_cap = float(history["meta"].get("salary_cap") or 0.0)
+    except (TypeError, ValueError):
+        salary_cap = 0.0
 
     scores_only = [s for _, s in weekly_scores]
     median_pf = statistics.median(scores_only) if scores_only else 0.0
@@ -72,6 +77,8 @@ def update_history(
         ppk = (pts_val / (sal / 1000.0)) if sal > 0 else 0.0
         luck = pts_val - median_pf
 
+        cap_pct = (sal / salary_cap * 100.0) if salary_cap > 0 else 0.0
+
         week_row = {
             "week": int(week),
             "pts": pts_val,
@@ -79,6 +86,7 @@ def update_history(
             "cpp": cpp,
             "ppk": ppk,
             "luck": luck,
+            "cap_pct": cap_pct,
         }
         if league_cpp > 0 and cpp > 0:
             week_row["burn_rate_pct"] = (cpp / league_cpp - 1.0) * 100.0
@@ -89,7 +97,13 @@ def update_history(
         team["weeks"].sort(key=lambda w: int(w.get("week", 0)))
 
 def build_season_rankings(history: History) -> List[Dict[str, Any]]:
-    rows: List[Dict[str, Any]] = []
+    meta = history.get("meta") or {}
+    try:
+        salary_cap = float(meta.get("salary_cap") or 0.0)
+    except (TypeError, ValueError):
+        salary_cap = 0.0
+
+    raw_rows: List[Dict[str, Any]] = []
 
     for fid, t in (history.get("teams") or {}).items():
         weeks = sorted(t.get("weeks", []), key=lambda w: int(w.get("week", 0)))
@@ -99,6 +113,7 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         pts_list = [float(w.get("pts", 0.0)) for w in weeks]
         sal_list = [float(w.get("sal", 0.0)) for w in weeks]
         cpp_list = [float(w.get("cpp", 0.0)) for w in weeks if float(w.get("cpp", 0.0)) > 0]
+        cap_pct_list = [float(w.get("cap_pct", 0.0)) for w in weeks if float(w.get("cap_pct", 0.0)) > 0]
         weekly_ppk = [float(w.get("ppk") or 0.0) for w in weeks]
         luck_sum = sum(float(w.get("luck", 0.0)) for w in weeks)
 
@@ -113,35 +128,88 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         bust_count = sum(1 for x in weekly_ppk if x <= 1.5)
         boom_rate = boom_count / weeks_played if weeks_played else 0.0
         bust_rate = bust_count / weeks_played if weeks_played else 0.0
+        ceiling = max(pts_list) if pts_list else 0.0
+        cv = (stdev / avg) if avg else 0.0
+        if cap_pct_list:
+            avg_cap_pct = sum(cap_pct_list) / len(cap_pct_list)
+        elif salary_cap > 0 and weeks_played:
+            avg_cap_pct = (sal_sum / weeks_played) / salary_cap * 100.0
+        else:
+            avg_cap_pct = 0.0
 
-        rows.append({
-            "id": fid,
-            "team": t.get("name", fid),
-            "weeks": weeks_played,
-            "pts_sum": round(pts_sum, 2),
-            "avg": round(avg, 2),
-            "stdev": round(stdev, 2),
-            "luck_sum": round(luck_sum, 2),
-            "avg_cpp": round(avg_cpp, 4),
-            "ppk": round(ppk, 4),
-            "boom_rate": round(boom_rate, 3),
-            "bust_rate": round(bust_rate, 3),
-        })
+        raw_rows.append(
+            {
+                "id": fid,
+                "team": t.get("name", fid),
+                "weeks": weeks_played,
+                "pts_sum": pts_sum,
+                "avg": avg,
+                "stdev": stdev,
+                "luck_sum": luck_sum,
+                "avg_cpp": avg_cpp,
+                "ppk": ppk,
+                "boom_rate": boom_rate,
+                "bust_rate": bust_rate,
+                "sal_sum": sal_sum,
+                "avg_cap_pct": avg_cap_pct,
+                "cv": cv,
+                "ceiling": ceiling,
+            }
+        )
 
     league_avg_cpp = 0.0
-    cpp_vals = [r["avg_cpp"] for r in rows if r["avg_cpp"] > 0]
+    cpp_vals = [r["avg_cpp"] for r in raw_rows if r["avg_cpp"] > 0]
     if cpp_vals:
         league_avg_cpp = sum(cpp_vals) / len(cpp_vals)
 
-    out: List[Dict[str, Any]] = []
-    for r in rows:
+    for r in raw_rows:
         if r["avg_cpp"] > 0 and league_avg_cpp > 0:
-            r["burn_rate_pct"] = round((r["avg_cpp"] / league_avg_cpp - 1.0) * 100.0, 1)
+            r["burn_rate_pct"] = (r["avg_cpp"] / league_avg_cpp - 1.0) * 100.0
         else:
             r["burn_rate_pct"] = 0.0
-        out.append(r)
+        if league_avg_cpp > 0:
+            expected_pts = r["sal_sum"] / league_avg_cpp
+        else:
+            expected_pts = 0.0
+        r["vob"] = r["pts_sum"] - expected_pts
+        r["value_over_baseline"] = r["vob"]
 
-    out.sort(key=lambda x: (-x["ppk"], -x["boom_rate"], x["bust_rate"], -x["avg"], x["stdev"]))
-    for i, r in enumerate(out, 1):
-        r["rank"] = i
+    raw_rows.sort(
+        key=lambda x: (
+            -x["ppk"],
+            -x["vob"],
+            -x["boom_rate"],
+            x["bust_rate"],
+            -x["ceiling"],
+            -x["avg"],
+            x["stdev"],
+        )
+    )
+
+    out: List[Dict[str, Any]] = []
+    for idx, r in enumerate(raw_rows, 1):
+        out.append(
+            {
+                "id": r["id"],
+                "team": r["team"],
+                "weeks": r["weeks"],
+                "pts_sum": round(r["pts_sum"], 2),
+                "avg": round(r["avg"], 2),
+                "stdev": round(r["stdev"], 2),
+                "luck_sum": round(r["luck_sum"], 2),
+                "avg_cpp": round(r["avg_cpp"], 4),
+                "ppk": round(r["ppk"], 4),
+                "boom_rate": round(r["boom_rate"], 3),
+                "bust_rate": round(r["bust_rate"], 3),
+                "burn_rate_pct": round(r["burn_rate_pct"], 1) if r["burn_rate_pct"] else 0.0,
+                "vob": round(r["vob"], 2),
+                "value_over_baseline": round(r["value_over_baseline"], 2),
+                "avg_cap_pct": round(r["avg_cap_pct"], 1),
+                "cv": round(r["cv"], 3),
+                "ceiling": round(r["ceiling"], 2),
+                "sal_sum": round(r["sal_sum"], 2),
+                "rank": idx,
+            }
+        )
+
     return out
