@@ -1,0 +1,78 @@
+{{ bundle.title or "NPFFL Weekly Roast" }} — Week {{ bundle.week_label }}
+{% if bundle.timezone %}Timezone: {{ bundle.timezone }}{% endif %}
+
+{% set narrative = narrative or {} %}
+{% set dump = narrative.dumpster_fire %}
+{% if dump and dump.tiers %}
+Dumpster Fire Watch
+-------------------
+{% if dump.average %}League average score: {{ '%.2f'|format(dump.average) }}
+{% endif %}
+{% for tier in dump.tiers %}
+{{ tier.label }}
+{% for entry in tier.entries %}- {{ entry.blurb }}
+{% endfor %}
+{% if not loop.last %}
+{% endif %}
+{% endfor %}
+
+{% endif %}
+{% set fraud = narrative.fraud_watch %}
+{% if fraud and fraud.entries %}
+Fraud Watch
+-----------
+{% for entry in fraud.entries %}- {{ entry.blurb }}
+{% endfor %}
+
+{% endif %}
+{% set crime = narrative.vp_crime_scene %}
+{% if crime and (crime.villain or crime.victim) %}
+VP Crime Scene
+--------------
+{% if crime.villain %}- {{ crime.villain.blurb }}
+{% endif %}
+{% if crime.victim %}- {{ crime.victim.blurb }}
+{% endif %}
+
+{% endif %}
+{% set spotlight = narrative.spotlight %}
+{% if spotlight %}
+Sh*t Talk Spotlight
+-------------------
+{% if spotlight.top %}- {{ spotlight.top.blurb }}
+{% endif %}
+{% if spotlight.bottom %}- {{ spotlight.bottom.blurb }}
+{% endif %}
+{% if spotlight.headliner %}
+Note: {{ spotlight.headliner }}
+{% endif %}
+
+{% endif %}
+{% set vb = narrative.value_vs_busts %}
+{% if vb and (vb.values or vb.busts) %}
+Value vs Busts
+--------------
+{% if vb.values %}Values:
+{% for entry in vb.values %}- {{ entry.blurb }}
+{% endfor %}
+{% endif %}
+{% if vb.busts %}Busts:
+{% for entry in vb.busts %}- {{ entry.blurb }}
+{% endfor %}
+{% endif %}
+
+{% endif %}
+{% set pool = narrative.pool_report %}
+{% if pool and (pool.confidence or pool.survivor) %}
+Survivor & Confidence Pools
+--------------------------
+{% if pool.confidence %}Confidence:
+{% for line in pool.confidence %}- {{ line }}
+{% endfor %}
+{% endif %}
+{% if pool.survivor %}Survivor:
+{% for line in pool.survivor %}- {{ line }}
+{% endfor %}
+{% endif %}
+
+{% endif %}Generated automatically. No mercy, just math.
