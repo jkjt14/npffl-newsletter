@@ -86,6 +86,7 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         luck_sum = sum(float(w.get("luck", 0.0)) for w in weeks)
         stdev = statistics.pstdev(pts_list) if len(pts_list) > 1 else 0.0
         avg = (pts_sum / len(pts_list)) if pts_list else 0.0
+        cv = (stdev / avg) if avg > 0 else 0.0
         avg_cpp = (sum(cpp_list)/len(cpp_list)) if cpp_list else 0.0
         ppk = (pts_sum / (sal_sum/1000)) if sal_sum > 0 else 0.0  # hidden efficiency
 
@@ -96,6 +97,7 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             "pts_sum": round(pts_sum, 2),
             "avg": round(avg, 2),
             "stdev": round(stdev, 2),
+            "cv": round(cv, 4),
             "luck_sum": round(luck_sum, 2),
             "avg_cpp": round(avg_cpp, 4),
             "ppk": round(ppk, 4),
@@ -114,8 +116,18 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         else:
             r["burn_rate_pct"] = 0.0
 
-    # rank by hidden efficiency (ppk), tie-break avg then stdev (lower stdev = more consistent)
-    out.sort(key=lambda x: (-x["ppk"], -x["avg"], x["stdev"]))
+    def _steadiness_weight(cv: float) -> float:
+        return (1.0 / (1.0 + cv)) if cv > 0 else 1.0
+
+    # rank by hidden efficiency (ppk) tempered by steadiness (inverse cv),
+    # tie-break avg then stdev (lower stdev = more consistent)
+    out.sort(
+        key=lambda x: (
+            -(x["ppk"] * _steadiness_weight(x.get("cv", 0.0))),
+            -x["avg"],
+            x["stdev"],
+        )
+    )
     # assign rank
     for i, r in enumerate(out, 1):
         r["rank"] = i

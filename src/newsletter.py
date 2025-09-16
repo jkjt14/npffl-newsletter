@@ -309,12 +309,23 @@ def _mk_md(payload: Dict[str, Any]) -> str:
         out.append(rb.power_vibes_blurb(season_rank, tone))
         out.append("")
         if season_rank:
-            headers = ["#", "Team", "Pts (YTD)", "Avg"]
+            headers = ["#", "Team", "Pts (YTD)", "Avg", "CV"]
             rows = []
             for r in season_rank:
                 fid = str(r["id"]).zfill(4)
                 logo_html = _embed_logo_html(fid, r["team"], logos_dir)
-                rows.append([str(r["rank"]), logo_html, _fmt2(r["pts_sum"]), _fmt2(r["avg"])])
+                cv_val = r.get("cv", 0.0)
+                try:
+                    cv_disp = f"{float(cv_val):.3f}"
+                except (TypeError, ValueError):
+                    cv_disp = "0.000"
+                rows.append([
+                    str(r["rank"]),
+                    logo_html,
+                    _fmt2(r["pts_sum"]),
+                    _fmt2(r["avg"]),
+                    cv_disp,
+                ])
             out.append(_mini_table(headers, rows))
         roast_line = _roast_quote(("fire", rb.power_vibes_roast(tone)))
         if roast_line:
