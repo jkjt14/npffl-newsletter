@@ -33,6 +33,19 @@ def _merge_franchise_names(*maps: Dict[str, str] | None) -> Dict[str, str]:
             out[str(k).zfill(4)] = str(v)
     return out
 
+
+def _history_weeks(history: Dict[str, Any]) -> set[int]:
+    weeks: set[int] = set()
+    teams = history.get("teams") or {}
+    if isinstance(teams, dict):
+        for team in teams.values():
+            for wk in (team.get("weeks") or []):
+                try:
+                    weeks.add(int(wk.get("week")))
+                except (TypeError, ValueError):
+                    continue
+    return weeks
+
 def _cfg_get(cfg: Dict[str, Any], dotted: str, default: Any = None) -> Any:
     cur = cfg
     for part in dotted.split("."):
@@ -237,7 +250,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
 
     # Salaries (required)
     salary_glob = _resolve_required_salaries_glob(cfg)
-    salaries_df = load_salary_file(salary_glob)
+    salaries_df = load_salary_file(salary_glob, week=week)
 
     # Values/Efficiency
     values_out: Dict[str, Any] = compute_values(
@@ -323,6 +336,54 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         print(f"[history] {e}; starting fresh")
         history = {"teams": {}, "meta": {}}
 
+    present_weeks = _history_weeks(history)
+    missing_weeks = [w for w in range(1, int(week)) if w not in present_weeks]
+    if missing_weeks:
+        print(f"[history] Backfilling weeks: {missing_weeks}")
+    for wk in missing_weeks:
+        try:
+            wk_data = fetch_week_data(client, week=wk) or {}
+        except Exception as exc:
+            print(f"[history] Failed to fetch week {wk}: {exc}")
+            continue
+
+        wk_fnames = _merge_franchise_names(
+            wk_data.get("franchise_names"),
+            getattr(client, "franchise_names", None),
+            cfg.get("franchise_names"),
+        )
+        wk_scores = _derive_weekly_scores(wk_data)
+        if not wk_scores:
+            print(f"[history] No scores found for week {wk}; skipping")
+            continue
+
+        wk_starters = _extract_starters_by_franchise(wk_data)
+        wk_players = wk_data.get("players_map") or wk_data.get("players") or {}
+        try:
+            wk_salary_df = load_salary_file(salary_glob, week=wk)
+        except Exception as exc:
+            print(f"[history] Salary load failed for week {wk}: {exc}; reusing current sheet")
+            wk_salary_df = salaries_df
+
+        wk_values = compute_values(
+            wk_salary_df,
+            wk_players,
+            wk_starters,
+            wk_fnames,
+            week=wk,
+            year=year,
+        )
+        wk_eff = wk_values.get("team_efficiency", [])
+
+        update_history(
+            history,
+            year=year,
+            week=wk,
+            franchise_names=wk_fnames,
+            weekly_scores=wk_scores,
+            team_efficiency=wk_eff,
+        )
+
     salary_cap = _safe_float(_cfg_get(cfg, "salary_cap"), 0.0)
     if salary_cap > 0:
         history.setdefault("meta", {})["salary_cap"] = salary_cap
@@ -338,6 +399,16 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     )
     save_history(history, history_dir)
     season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, burn_rate_pct, ppk
+
+    assets_cfg = cfg.get("assets") or {}
+    logos_dir_cfg = assets_cfg.get("logos_dir") or "assets/franchises"
+    assets_payload: Dict[str, Any] = {"logos_dir": str(logos_dir_cfg)}
+    if assets_cfg.get("banners_dir"):
+        assets_payload["banners_dir"] = str(assets_cfg.get("banners_dir"))
+    if assets_cfg.get("logo_width_px"):
+        assets_payload["logo_width_px"] = assets_cfg.get("logo_width_px")
+    if "use_franchise_logos" in assets_cfg:
+        assets_payload["use_franchise_logos"] = assets_cfg.get("use_franchise_logos")
 
     payload: Dict[str, Any] = {
         "title": _cfg_get(cfg, "newsletter.title") or "NPFFL Weekly Newsletter",
@@ -365,7 +436,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         # season power rankings (mini table)
         "season_rankings": season_table,
         # assets (optional banners)
-        "assets": {"banners_dir": "assets/banners"},
+        "assets": assets_payload,
     }
 
     try:

@@ -25,6 +25,10 @@ def _last_first_from_fl(fl: str) -> str:
 
 def _players_directory(client: MFLClient) -> Dict[str, Dict[str, str]]:
     """Canonical players directory (names/pos/team) to enrich weekly data."""
+    cache = getattr(client, "_players_directory_cache", None)
+    if isinstance(cache, dict) and cache:
+        return cache
+
     data = client.get_players(details=1)
     out: Dict[str, Dict[str, str]] = {}
     rows = (data or {}).get("players", {}).get("player", []) or []
@@ -40,6 +44,7 @@ def _players_directory(client: MFLClient) -> Dict[str, Dict[str, str]]:
         pos = str(p.get("position") or p.get("pos") or "").strip()
         team = str(p.get("team") or "").strip()
         out[pid] = {"raw": raw, "first_last": fl, "last_first": lf, "pos": pos, "team": team}
+    setattr(client, "_players_directory_cache", out)
     return out
 
 

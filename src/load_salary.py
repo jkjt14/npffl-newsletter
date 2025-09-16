@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob
+import re
 from pathlib import Path
 from typing import Optional, Tuple, List
 
@@ -88,6 +89,17 @@ def _read_excel_with_fallback(xlsx_path: Path) -> pd.DataFrame:
     return pd.read_excel(xlsx_path, engine="openpyxl")
 
 
+def _parse_week_number(path: Path) -> Optional[int]:
+    """Best-effort parse of the week number from a salary filename."""
+
+    stem = path.stem  # strip extension
+    nums = [int(tok) for tok in re.findall(r"\d+", stem) if tok.isdigit()]
+    for num in reversed(nums):
+        if 1 <= num <= 22:  # cover regular season + playoffs
+            return num
+    return None
+
+
 def _pick_latest_file(pattern: str) -> Optional[Path]:
     matches = sorted(glob.glob(pattern))
     if not matches:
@@ -97,9 +109,49 @@ def _pick_latest_file(pattern: str) -> Optional[Path]:
     return Path(latest)
 
 
-def load_salary_file(salary_glob: str = "data/salaries/2025_*_Salary.xlsx") -> pd.DataFrame:
+def _pick_week_file(pattern: str, week: int) -> Optional[Path]:
+    """Return the salary sheet closest to the requested week."""
+
+    matches = [Path(p) for p in sorted(glob.glob(pattern))]
+    if not matches:
+        return None
+
+    target = int(week)
+
+    # First pass: look for an exact match
+    for path in matches:
+        wk = _parse_week_number(path)
+        if wk == target:
+            return path
+
+    # Second pass: prefer the latest prior week so values are at least historical
+    prior: tuple[Optional[Path], Optional[int]] = (None, None)
+    for path in matches:
+        wk = _parse_week_number(path)
+        if wk is None:
+            continue
+        diff = target - wk
+        if diff < 0:
+            continue
+        if prior[0] is None or (prior[1] is not None and diff < prior[1]):
+            prior = (path, diff)
+    if prior[0] is not None:
+        return prior[0]
+
+    # Fallback: just hand back the latest sheet available
+    return matches[-1]
+
+
+def load_salary_file(
+    salary_glob: str = "data/salaries/2025_*_Salary.xlsx",
+    week: Optional[int] = None,
+) -> pd.DataFrame:
     """
     Read and normalize the salary sheet.
+
+    If ``week`` is provided, the loader will try to find a sheet for that
+    specific slate. When an exact filename match is not available we fall back
+    to the closest earlier week (or the latest sheet overall).
 
     Returns a DataFrame with canonical columns:
       - name (str, 'First Last')
@@ -109,12 +161,24 @@ def load_salary_file(salary_glob: str = "data/salaries/2025_*_Salary.xlsx") -> p
 
     Prints a short log about what it detected.
     """
-    xlsx_path = _pick_latest_file(salary_glob)
+    if week is None:
+        xlsx_path = _pick_latest_file(salary_glob)
+    else:
+        xlsx_path = _pick_week_file(salary_glob, week)
     if not xlsx_path:
         raise FileNotFoundError(
             f"[load_salary] No files matched pattern '{salary_glob}'. "
             "Drop a file like 'data/salaries/2025_01_Salary.xlsx'."
         )
+
+    if week is not None:
+        parsed = _parse_week_number(xlsx_path)
+        if parsed != week:
+            logger.warning(
+                "[load_salary] Using '%s' for week %s (closest available match)",
+                xlsx_path.name,
+                week,
+            )
 
     raw = _read_excel_with_fallback(xlsx_path)
     if raw is None or raw.empty:

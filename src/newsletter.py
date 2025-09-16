@@ -24,7 +24,7 @@ def _mini_table(headers: List[str], rows: List[List[str]]) -> str:
     lines.append("")
     return "\n".join(lines)
 
-def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
+def _embed_logo_html(fid: str, alt_text: str, dirpath: str, width_px: int | None = None) -> str:
     p_png = Path(dirpath) / f"{fid}.png"
     p_jpg = Path(dirpath) / f"{fid}.jpg"
     p = p_png if p_png.exists() else (p_jpg if p_jpg.exists() else None)
@@ -34,7 +34,21 @@ def _embed_logo_html(fid: str, alt_text: str, dirpath: str) -> str:
     mime = mime or ("image/png" if p.suffix.lower()==".png" else "image/jpeg")
     try:
         b64 = base64.b64encode(p.read_bytes()).decode("ascii")
-        return f'<img src="data:{mime};base64,{b64}" alt="{html.escape(alt_text)}" style="height:26px;vertical-align:middle;border-radius:4px;" />'
+        styles = []
+        if width_px and width_px > 0:
+            styles.append(f"width:{int(width_px)}px")
+            styles.append("height:auto")
+        else:
+            styles.append("height:26px")
+        styles.append("vertical-align:middle")
+        styles.append("border-radius:4px")
+        style_attr = ";".join(styles)
+        if style_attr and not style_attr.endswith(";"):
+            style_attr += ";"
+        return (
+            f'<img src="data:{mime};base64,{b64}" alt="{html.escape(alt_text)}" '
+            f'style="{style_attr}" />'
+        )
     except Exception:
         return alt_text
 
@@ -85,7 +99,13 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     conf_no = (payload.get("confidence_meta") or {}).get("no_picks", [])
     surv = payload.get("survivor_list") or []
     surv_no = (payload.get("survivor_meta") or {}).get("no_picks", [])
-    logos_dir = (payload.get("assets") or {}).get("banners_dir") or "assets/franchises"
+    assets_cfg = payload.get("assets") or {}
+    logos_dir = assets_cfg.get("logos_dir") or assets_cfg.get("banners_dir") or "assets/franchises"
+    try:
+        logo_width_px = int(assets_cfg.get("logo_width_px"))
+    except (TypeError, ValueError):
+        logo_width_px = None
+    use_logos = bool(assets_cfg.get("use_franchise_logos", True))
 
     # Feature flags (Around the League OFF by default this week)
     features = payload.get("features") or {}
@@ -358,8 +378,11 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             rows = []
             for r in season_rank:
                 fid = str(r["id"]).zfill(4)
-                logo_html = _embed_logo_html(fid, r["team"], logos_dir)
-                rows.append([str(r["rank"]), logo_html, _fmt2(r["pts_sum"]), _fmt2(r["avg"])])
+                if use_logos:
+                    logo_cell = _embed_logo_html(fid, r["team"], logos_dir, logo_width_px)
+                else:
+                    logo_cell = r["team"]
+                rows.append([str(r["rank"]), logo_cell, _fmt2(r["pts_sum"]), _fmt2(r["avg"])])
             out.append(_mini_table(headers, rows))
         roast_line = _roast_quote(("fire", rb.power_vibes_roast(tone)))
         if roast_line:
