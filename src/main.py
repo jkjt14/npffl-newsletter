@@ -457,6 +457,24 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     print(f"Wrote: {stub}")
     return (stub,)
 
+from transform.league_narratives import build_narratives
+from pathlib import Path
+# ... existing code ...
+week_bundle = {
+    "week": week,
+    "timezone": payload.get("timezone", "America/New_York"),
+    "drop_time_et": payload.get("config", {}).get("drop_time_et", "12:00 PM"),
+    "teams": [{"team_id": f, "name": name} for f, name in f_map.items()],
+    "scores": [{"team_id": row["id"], "points": row["pf"], "salary_spent": 0.0, "proj_next_week": 0.0} for row in season_table],
+    "vp_table": [{"team_id": row["id"], "vp_cutoff_diff": row.get("vp_diff", 0.0), "got_2p5": row["vp"] >= 2.5} for row in season_table],
+    "picks_conf": [],  # fill from your payload if needed
+    "picks_survivor": [],  # fill from your payload if needed
+    "player_perf": [],  # list of player performances
+    "chalk_busts": [],  # fill with high‑owned players scoring <=4 points
+    "value_hits": [],   # fill with low‑salary players scoring well
+}
+narratives = build_narratives(week_bundle, season=2025, state_dir="state")
+
 
 def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     args = _parse_args()
