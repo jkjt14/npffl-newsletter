@@ -478,6 +478,55 @@ week_bundle = {
 }
 narratives = build_narratives(week_bundle, season=2025, state_dir="state")
 
+# Convert week to a two-digit label (e.g. "02")
+week_label = _week_label(week)
+
+# Use your season_table or standings to build the 'teams' and 'scores' lists.
+# 'season_table' in your code contains id/name/pf/vp for each team.
+teams_list = []
+scores_list = []
+for row in season_table:
+    # row["id"] is a 4-digit string like "0001"
+    teams_list.append({"team_id": row["id"], "name": row.get("name")})
+    scores_list.append({
+        "team_id": row["id"],
+        "points": row.get("pf", 0.0),
+        # You can fill salary_spent and proj_next_week if you have those metrics;
+        # otherwise supply 0.0 so the field exists.
+        "salary_spent": 0.0,
+        "proj_next_week": 0.0,
+    })
+
+vp_table = []
+for row in season_table:
+    vp_table.append({
+        "team_id": row["id"],
+        # If you track the point-difference from the VP cutoff, put it here; otherwise 0.0
+        "vp_cutoff_diff": 0.0,
+        # 'got_2p5' = True when VP >= 2.5; adjust threshold if needed
+        "got_2p5": float(row.get("vp", 0.0)) >= 2.5,
+    })
+
+week_bundle = {
+    "week": week,
+    "timezone": payload.get("timezone", "America/New_York"),
+    # Your config may have a drop time (when the newsletter is sent); default to noon ET
+    "drop_time_et": payload.get("config", {}).get("drop_time_et", "12:00 PM"),
+    "teams": teams_list,
+    "scores": scores_list,
+    "vp_table": vp_table,
+    # These can be filled later from your payload (e.g. confidence picks, survivor picks)
+    "picks_conf": [],
+    "picks_survivor": [],
+    # These can remain empty or be populated from your payload's player stats
+    "player_perf": [],
+    "chalk_busts": [],   # fill with top busts if you want the “Chalk busts” section populated
+    "value_hits": [],    # fill with good value plays if desired
+}
+
+# Use the current season (e.g. 2025) or derive from payload
+season_year = payload.get("season") or 2025
+nar = build_narratives(week_bundle, season=season_year, state_dir="state")
 
 def main() -> Tuple[Path, Path] | Tuple[Path] | Tuple[()]:
     args = _parse_args()
