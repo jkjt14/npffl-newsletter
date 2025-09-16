@@ -97,6 +97,17 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     tone = rb.Tone(tone_name)
     pb_intro = ProseBuilder(tone)
 
+    def _roast_quote(*entries: tuple[str, str]) -> str:
+        parts: List[str] = []
+        for key, text in entries:
+            snippet = (text or "").strip()
+            if not snippet:
+                continue
+            emoji = tone.emojis.get(key, "")
+            parts.append(f"{emoji} {snippet}" if emoji else snippet)
+        body = " ".join(parts).strip()
+        return f"> {body}" if body else ""
+
     def _safe_float(val: Any) -> float | None:
         try:
             return float(val)
@@ -235,8 +246,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             out.append("")
             out.append(chlv)
         out.append("")
-        out.append(f"*{rb.weekly_results_roast(tone)}*")
-        out.append("")
+        roast_line = _roast_quote(("fire", rb.weekly_results_roast(tone)))
+        if roast_line:
+            out.append(roast_line)
+            out.append("")
     except Exception:
         out.append("_Weekly Results unavailable._")
 
@@ -246,8 +259,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             out.append("## VP Drama")
             out.append(rb.vp_drama_blurb(payload["vp_drama"], tone))
             out.append("")
-            out.append(f"*{rb.vp_drama_roast(tone)}*")
-            out.append("")
+            roast_line = _roast_quote(("warn", rb.vp_drama_roast(tone)))
+            if roast_line:
+                out.append(roast_line)
+                out.append("")
     except Exception:
         out.append("_VP Drama unavailable._")
 
@@ -257,8 +272,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             out.append("## Headliners")
             out.append(rb.headliners_blurb(headliners, tone))
             out.append("")
-            out.append(f"*{rb.headliners_roast(tone)}*")
-            out.append("")
+            roast_line = _roast_quote(("boom", rb.headliners_roast(tone)))
+            if roast_line:
+                out.append(roast_line)
+                out.append("")
     except Exception:
         out.append("_Headliners unavailable._")
 
@@ -268,8 +285,13 @@ def _mk_md(payload: Dict[str, Any]) -> str:
         out.append(rb.values_blurb(values, tone))
         out.append(rb.busts_blurb(busts, tone))
         out.append("")
-        out.append(f"*{rb.values_roast(tone)} {rb.busts_roast(tone)}*")
-        out.append("")
+        roast_line = _roast_quote(
+            ("dart", rb.values_roast(tone)),
+            ("ice", rb.busts_roast(tone)),
+        )
+        if roast_line:
+            out.append(roast_line)
+            out.append("")
     except Exception:
         out.append("_Value vs. Busts unavailable._")
 
@@ -288,8 +310,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
                 logo_html = _embed_logo_html(fid, r["team"], logos_dir)
                 rows.append([str(r["rank"]), logo_html, _fmt2(r["pts_sum"]), _fmt2(r["avg"])])
             out.append(_mini_table(headers, rows))
-        out.append(f"*{rb.power_vibes_roast(tone)}*")
-        out.append("")
+        roast_line = _roast_quote(("fire", rb.power_vibes_roast(tone)))
+        if roast_line:
+            out.append(roast_line)
+            out.append("")
     except Exception:
         out.append("_Power Vibes unavailable._")
 
@@ -299,8 +323,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             out.append("## Confidence Pick’em")
             out.append(rb.confidence_story(conf3, team_prob, conf_no, tone))
             out.append("")
-            out.append(f"*{rb.confidence_roast(tone)}*")
-            out.append("")
+            roast_line = _roast_quote(("dart", rb.confidence_roast(tone)))
+            if roast_line:
+                out.append(roast_line)
+                out.append("")
     except Exception:
         out.append("_Confidence section unavailable._")
 
@@ -310,8 +336,10 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             out.append("## Survivor Pool")
             out.append(rb.survivor_story(surv, team_prob, surv_no, tone))
             out.append("")
-            out.append(f"*{rb.survivor_roast(tone)}*")
-            out.append("")
+            roast_line = _roast_quote(("fire", rb.survivor_roast(tone)))
+            if roast_line:
+                out.append(roast_line)
+                out.append("")
     except Exception:
         out.append("_Survivor section unavailable._")
 
