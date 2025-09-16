@@ -137,7 +137,7 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     for r in rows:
         expected_pts = (r["sal_sum"] / league_avg_cpp) if league_avg_cpp > 0 else 0.0
-        vob = r["pts_sum"] - expected_pts
+        value_over_baseline = r["pts_sum"] - expected_pts
         out.append({
             "id": r["id"],
             "team": r["team"],
@@ -148,7 +148,8 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             "luck_sum": round(r["luck_sum"], 2),
             "avg_cpp": round(r["avg_cpp"], 4),
             "ppk": round(r["ppk"], 4),
-            "vob": round(vob, 2),
+            "vob": round(value_over_baseline, 2),
+            "value_over_baseline": round(value_over_baseline, 2),
             "boom_rate": round(r["boom_rate"], 3),
             "bust_rate": round(r["bust_rate"], 3),
             "avg_cap_pct": round(r["avg_cap_pct"], 1),
