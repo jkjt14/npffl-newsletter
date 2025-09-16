@@ -58,7 +58,8 @@ def update_history(
         name = franchise_names.get(fid4, f"Team {fid4}")
         eff = eff_idx.get(fid4, {})
         sal = float(eff.get("total_sal") or 0.0)
-        # if your efficiency rows are only per-week sums, sal here is weekly salary; if season-summed, it's okay—we show season table anyway
+        # if your efficiency rows are only per-week sums, sal here is weekly salary;
+        # if season-summed, it's okay—we show season table anyway
         cpp = (sal / pts) if pts > 0 else 0.0
         luck = float(pts) - float(median_pf)
 
