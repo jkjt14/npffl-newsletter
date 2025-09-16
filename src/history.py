@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 import statistics
+from collections.abc import Iterable
 
 History = Dict[str, Any]
 
@@ -29,6 +30,22 @@ def _ensure_team(history: History, fid: str, name: str) -> Dict[str, Any]:
     t["name"] = name                     # keep latest name
     return t
 
+
+def _first_value(mapping: Dict[str, Any], keys: Iterable[str]) -> Any:
+    for key in keys:
+        if key in mapping and mapping[key] is not None:
+            return mapping[key]
+    return None
+
+
+def _coerce_float(value: Any) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
 def update_history(
     history: History,
     *,
@@ -39,13 +56,14 @@ def update_history(
     team_efficiency: List[Dict[str, Any]],
 ) -> None:
     history.setdefault("meta", {})
+    history.setdefault("teams", {})
     history["meta"]["year"] = year
     try:
         salary_cap = float(history["meta"].get("salary_cap") or 0.0)
     except (TypeError, ValueError):
         salary_cap = 0.0
 
-    scores_only = [s for _, s in weekly_scores]
+    scores_only = [_coerce_float(s) for _, s in weekly_scores]
     median_pf = statistics.median(scores_only) if scores_only else 0.0
 
     eff_idx: Dict[str, Dict[str, Any]] = {}
@@ -62,8 +80,10 @@ def update_history(
         )
         fid4 = _z4(fid_raw or "")
         eff_idx[fid4] = row
-        league_pts += float(row.get("total_pts") or 0.0)
-        league_sal += float(row.get("total_sal") or row.get("salary") or row.get("total_salary") or 0.0)
+        pts_val = _first_value(row, ("total_pts", "total_points", "points", "pts"))
+        sal_val = _first_value(row, ("total_sal", "salary", "total_salary", "sal", "spent"))
+        league_pts += _coerce_float(pts_val)
+        league_sal += _coerce_float(sal_val)
 
     league_cpp = (league_sal / league_pts) if league_pts else 0.0
 
@@ -71,8 +91,9 @@ def update_history(
         fid4 = _z4(fid)
         name = franchise_names.get(fid4, f"Team {fid4}")
         eff = eff_idx.get(fid4, {})
-        sal = float(eff.get("total_sal") or eff.get("salary") or eff.get("total_salary") or 0.0)
-        pts_val = float(pts)
+        sal_raw = _first_value(eff, ("total_sal", "salary", "total_salary", "sal", "spent"))
+        sal = _coerce_float(sal_raw)
+        pts_val = _coerce_float(pts)
         cpp = (sal / pts_val) if pts_val > 0 else 0.0
         ppk = (pts_val / (sal / 1000.0)) if sal > 0 else 0.0
         luck = pts_val - median_pf
@@ -110,12 +131,29 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         if not weeks:
             continue
 
-        pts_list = [float(w.get("pts", 0.0)) for w in weeks]
-        sal_list = [float(w.get("sal", 0.0)) for w in weeks]
-        cpp_list = [float(w.get("cpp", 0.0)) for w in weeks if float(w.get("cpp", 0.0)) > 0]
-        cap_pct_list = [float(w.get("cap_pct", 0.0)) for w in weeks if float(w.get("cap_pct", 0.0)) > 0]
-        weekly_ppk = [float(w.get("ppk") or 0.0) for w in weeks]
-        luck_sum = sum(float(w.get("luck", 0.0)) for w in weeks)
+        pts_list: List[float] = []
+        sal_list: List[float] = []
+        cpp_list: List[float] = []
+        cap_pct_list: List[float] = []
+        weekly_ppk: List[float] = []
+        luck_sum = 0.0
+
+        for w in weeks:
+            pts_val = _coerce_float(w.get("pts", 0.0))
+            sal_val = _coerce_float(w.get("sal", 0.0))
+            cpp_val = _coerce_float(w.get("cpp", 0.0))
+            cap_pct_val = _coerce_float(w.get("cap_pct", 0.0))
+            ppk_val = _coerce_float(w.get("ppk") or 0.0)
+            luck_val = _coerce_float(w.get("luck", 0.0))
+
+            pts_list.append(pts_val)
+            sal_list.append(sal_val)
+            weekly_ppk.append(ppk_val)
+            luck_sum += luck_val
+            if cpp_val > 0:
+                cpp_list.append(cpp_val)
+            if cap_pct_val > 0:
+                cap_pct_list.append(cap_pct_val)
 
         pts_sum = sum(pts_list)
         sal_sum = sum(sal_list)
