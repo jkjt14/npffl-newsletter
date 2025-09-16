@@ -398,11 +398,11 @@ def _build_value_vs_busts(bundle: WeekBundle, cycler: PhraseCycler) -> Dict[str,
 def _build_pool_report(bundle: WeekBundle, cycler: PhraseCycler) -> Dict[str, Any]:
     confidence_lines: List[str] = []
     summary = bundle.confidence_summary
-    boring = summary.get("boring_consensus") if isinstance(summary, dict) else None
+    boring = summary.get("boring_pick") if isinstance(summary, dict) else None
     if boring:
         phrase = cycler.pick("confidence", f"NFL-{boring}")
         confidence_lines.append(_truncate(f"Consensus leaned {boring}. {phrase}"))
-    bold = summary.get("boldest_lifeline") if isinstance(summary, dict) else None
+    bold = summary.get("boldest_pick") if isinstance(summary, dict) else None
     if bold:
         phrase = cycler.pick("confidence", f"NFL-{bold}-bold")
         confidence_lines.append(_truncate(f"Boldest dart: {bold}. {phrase}"))
