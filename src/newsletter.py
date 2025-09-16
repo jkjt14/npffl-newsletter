@@ -226,6 +226,12 @@ def _mk_md(payload: Dict[str, Any]) -> str:
             intro_pick += "\n"
         out.append(intro_pick)
 
+    highlights = [ln for ln in (top_score_line, bottom_score_line, leaders_line, headliner_line) if ln]
+    if highlights:
+        out.append("## Quick Hits")
+        out.extend([f"- {ln}" for ln in highlights])
+        out.append("")
+
     # 1) Weekly Results  (intro → mini visual: Chalk&Leverage → roast)
     try:
         out.append("## Weekly Results")
