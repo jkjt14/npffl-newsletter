@@ -1,18 +1,87 @@
 # {{ title|e }} — Week {{ week_label }}
 
-## Standings Snapshot
-| Team | PF | VP |
-|---|---:|---:|
-{% for r in standings_rows %}
-| {{ r.name|e }} | {{ '%.1f'|format(r.pf) }} | {{ '%.1f'|format(r.vp) }} |
+{% set _config = config | default({}) %}
+{% set _tone_seed = tone_name | default(tone) | default(_config.tone) | default('spicy') %}
+{% if roastbook is defined %}
+  {% set _rb = roastbook %}
+{% elif rb is defined %}
+  {% set _rb = rb %}
+{% else %}
+  {% set _rb = None %}
+{% endif %}
+{% set _tone = _rb.Tone('{}'|format(_tone_seed)) %}
+{% set _scores = scores_info | default({}, true) %}
+{% set _starters = starters_by_franchise | default({}, true) %}
+{% set _vp = vp_drama | default({}, true) %}
+{% set _headliners = headliners | default([], true) %}
+{% set _values = top_values | default([], true) %}
+{% set _busts = top_busts | default([], true) %}
+{% set _season_rows = season_rankings | default([], true) %}
+{% set _conf_rows = confidence_top3 | default([], true) %}
+{% set _team_prob = team_prob | default({}, true) %}
+{% set _confidence_meta = confidence_meta | default({}, true) %}
+{% set _survivor_rows = survivor_list | default([], true) %}
+{% set _survivor_meta = survivor_meta | default({}, true) %}
+{% set _conf_no = _confidence_meta.get('no_picks', []) %}
+{% set _surv_no = _survivor_meta.get('no_picks', []) %}
+
+## Weekly Results
+{{ _rb.weekly_results_blurb(_scores, _tone) }}
+
+{% set _chalk_leverage = _rb.chalk_leverage_blurb(_starters, _tone) %}
+{% if _chalk_leverage %}
+{{ _chalk_leverage }}
+
+{% endif %}
+*{{ _rb.weekly_results_roast(_tone) }}*
+
+{% if _vp %}
+## VP Drama
+{{ _rb.vp_drama_blurb(_vp, _tone) }}
+
+*{{ _rb.vp_drama_roast(_tone) }}*
+
+{% endif %}
+{% if _headliners %}
+## Headliners
+{{ _rb.headliners_blurb(_headliners, _tone) }}
+
+*{{ _rb.headliners_roast(_tone) }}*
+
+{% endif %}
+## Value vs. Busts
+{{ _rb.values_blurb(_values, _tone) }}
+
+{{ _rb.busts_blurb(_busts, _tone) }}
+
+*{{ _rb.values_roast(_tone) }} {{ _rb.busts_roast(_tone) }}*
+
+## Power Vibes
+We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.
+
+{{ _rb.power_vibes_blurb(_season_rows, _tone) }}
+
+{% if _season_rows %}
+| # | Team | Pts (YTD) | Avg |
+|---|---|---|---|
+{% for row in _season_rows %}
+| {{ row.rank }} | {{ row.team|e }} | {{ '%.2f'|format(row.pts_sum) }} | {{ '%.2f'|format(row.avg) }} |
 {% endfor %}
 
-## Top Values (Pts per $1K)
-{% for r in top_values %}
-- **{{ r.player|e }}** ({{ r.pos|e }} {{ r.team|e }}) — {{ '%.1f'|format(r.pts) }} pts on ${{ '%.0f'|format(r.salary) }} → **{{ '%.2f'|format(r.ppk) }} pts/$1K**
-{% endfor %}
+{% endif %}
+*{{ _rb.power_vibes_roast(_tone) }}*
 
-## Biggest Busts (Costly Duds)
-{% for r in top_busts %}
-- **{{ r.player|e }}** ({{ r.pos|e }} {{ r.team|e }}) — {{ '%.1f'|format(r.pts) }} pts on ${{ '%.0f'|format(r.salary) }} → **{{ '%.2f'|format(r.ppk) }} pts/$1K**
-{% endfor %}
+{% if _conf_rows or _conf_no %}
+## Confidence
+{{ _rb.confidence_story(_conf_rows, _team_prob, _conf_no, _tone) }}
+
+*{{ _rb.confidence_roast(_tone) }}*
+
+{% endif %}
+{% if _survivor_rows or _surv_no %}
+## Survivor
+{{ _rb.survivor_story(_survivor_rows, _team_prob, _surv_no, _tone) }}
+
+*{{ _rb.survivor_roast(_tone) }}*
+
+{% endif %}
