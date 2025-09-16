@@ -58,18 +58,21 @@ def update_history(
         name = franchise_names.get(fid4, f"Team {fid4}")
         eff = eff_idx.get(fid4, {})
         sal = float(eff.get("total_sal") or 0.0)
+        pts_val = float(pts)
         # if your efficiency rows are only per-week sums, sal here is weekly salary; if season-summed, it's okay—we show season table anyway
-        cpp = (sal / pts) if pts > 0 else 0.0
-        luck = float(pts) - float(median_pf)
+        cpp = (sal / pts_val) if pts_val > 0 else 0.0
+        ppk = (pts_val / (sal / 1000.0)) if sal > 0 else 0.0
+        luck = pts_val - float(median_pf)
 
         team = _ensure_team(history, fid4, name)
         # avoid double-writing if re-running same week (idempotent)
         team["weeks"] = [w for w in team["weeks"] if int(w.get("week", 0)) != int(week)]
         team["weeks"].append({
             "week": int(week),
-            "pts": float(pts),
+            "pts": pts_val,
             "sal": float(sal),
             "cpp": float(cpp),
+            "ppk": float(ppk),
             "luck": float(luck),
         })
 
@@ -83,11 +86,17 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         sal_sum = sum(float(w.get("sal", 0.0)) for w in weeks)
         pts_sum = sum(pts_list)
         cpp_list = [float(w.get("cpp", 0.0)) for w in weeks if float(w.get("cpp", 0.0)) > 0]
+        weekly_ppk = [float(w.get("ppk") or 0.0) for w in weeks]
         luck_sum = sum(float(w.get("luck", 0.0)) for w in weeks)
         stdev = statistics.pstdev(pts_list) if len(pts_list) > 1 else 0.0
         avg = (pts_sum / len(pts_list)) if pts_list else 0.0
         avg_cpp = (sum(cpp_list)/len(cpp_list)) if cpp_list else 0.0
         ppk = (pts_sum / (sal_sum/1000)) if sal_sum > 0 else 0.0  # hidden efficiency
+        total_weeks = len(weeks)
+        boom_count = sum(1 for x in weekly_ppk if x >= 3.0)
+        bust_count = sum(1 for x in weekly_ppk if x <= 1.5)
+        boom_rate = (boom_count / total_weeks) if total_weeks else 0.0
+        bust_rate = (bust_count / total_weeks) if total_weeks else 0.0
 
         out.append({
             "id": fid,
@@ -99,6 +108,8 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             "luck_sum": round(luck_sum, 2),
             "avg_cpp": round(avg_cpp, 4),
             "ppk": round(ppk, 4),
+            "boom_rate": round(boom_rate, 3),
+            "bust_rate": round(bust_rate, 3),
         })
 
     # compute league avg cpp for relative “salary burn rate”
@@ -115,7 +126,7 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             r["burn_rate_pct"] = 0.0
 
     # rank by hidden efficiency (ppk), tie-break avg then stdev (lower stdev = more consistent)
-    out.sort(key=lambda x: (-x["ppk"], -x["avg"], x["stdev"]))
+    out.sort(key=lambda x: (-x["ppk"], -x["boom_rate"], x["bust_rate"], -x["avg"], x["stdev"]))
     # assign rank
     for i, r in enumerate(out, 1):
         r["rank"] = i

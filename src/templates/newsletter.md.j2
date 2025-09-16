@@ -62,10 +62,10 @@ We rank teams by what actually wins weeks: **points stacked**, a touch of **cons
 {{ _rb.power_vibes_blurb(_season_rows, _tone) }}
 
 {% if _season_rows %}
-| # | Team | Pts (YTD) | Avg |
-|---|---|---|---|
+| # | Team | Pts (YTD) | Avg | Boom% | Bust% |
+|---|---|---|---|---|---|
 {% for row in _season_rows %}
-| {{ row.rank }} | {{ row.team|e }} | {{ '%.2f'|format(row.pts_sum) }} | {{ '%.2f'|format(row.avg) }} |
+| {{ row.rank }} | {{ row.team|e }} | {{ '%.2f'|format(row.pts_sum) }} | {{ '%.2f'|format(row.avg) }} | {{ '%.1f%%'|format(row.boom_rate * 100) }} | {{ '%.1f%%'|format(row.bust_rate * 100) }} |
 {% endfor %}
 
 {% endif %}
