@@ -140,6 +140,44 @@ def _mk_md(payload: Dict[str, Any]) -> str:
 
     score_rows.sort(key=_score_sort_key, reverse=True)
 
+    def _resolve_table_limit(raw: Any, fallback: int) -> int:
+        try:
+            return max(int(raw), 0)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _format_score_cell(raw_score: Any) -> str:
+        val_float = _safe_float(raw_score)
+        if val_float is not None:
+            return _fmt2(val_float)
+        return str(raw_score)
+
+    score_table_rows: List[List[str]] = []
+    if score_rows:
+        base_limit = _resolve_table_limit(scores.get("table_n"), 3)
+        top_limit = _resolve_table_limit(scores.get("table_top_n"), base_limit)
+        bottom_limit = _resolve_table_limit(scores.get("table_bottom_n"), base_limit)
+        total = len(score_rows)
+        top_slice = score_rows[: min(top_limit, total)]
+        remaining = max(total - len(top_slice), 0)
+        bottom_count = min(bottom_limit, remaining)
+        bottom_slice = score_rows[-bottom_count:] if bottom_count else []
+
+        for team, pts in top_slice:
+            team_name = str(team or "").strip()
+            if not team_name:
+                continue
+            score_table_rows.append([team_name, _format_score_cell(pts)])
+
+        if bottom_slice:
+            if score_table_rows:
+                score_table_rows.append(["", ""])
+            for team, pts in bottom_slice:
+                team_name = str(team or "").strip()
+                if not team_name:
+                    continue
+                score_table_rows.append([team_name, _format_score_cell(pts)])
+
     avg_score = _safe_float(scores.get("avg"))
     top_score_line = ""
     bottom_score_line = ""
@@ -247,11 +285,18 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     try:
         out.append("## Weekly Results")
         out.append(rb.weekly_results_blurb(scores, tone))
+        rows = score_table_rows
+        table_md = _mini_table(["Team", "Score"], rows)
+        if table_md:
+            out.append(table_md)
+            out.append("")
         chlv = rb.chalk_leverage_blurb(starters_idx, tone)
         if chlv:
-            out.append("")
+            if not out or out[-1] != "":
+                out.append("")
             out.append(chlv)
-        out.append("")
+        if not out or out[-1] != "":
+            out.append("")
         roast_line = _roast_quote(("fire", rb.weekly_results_roast(tone)))
         if roast_line:
             out.append(roast_line)
