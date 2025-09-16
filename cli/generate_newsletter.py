@@ -52,7 +52,8 @@ def _capture_payload(cfg: Dict[str, Any], week: int) -> Dict[str, Any]:
 
     captured: Dict[str, Any] = {}
 
-    original_render = legacy_newsletter.render_newsletter
+    original_render_main = getattr(legacy_main, "render_newsletter", None)
+    original_render_module = legacy_newsletter.render_newsletter
 
     def _capture(payload: Dict[str, Any], output_dir: str, wk: int) -> Dict[str, str]:
         nonlocal captured
@@ -67,10 +68,14 @@ def _capture_payload(cfg: Dict[str, Any], week: int) -> Dict[str, Any]:
 
     with tempfile.TemporaryDirectory() as tmpdir:
         try:
-            legacy_newsletter.render_newsletter = _capture
+            if original_render_main is not None:
+                legacy_main.render_newsletter = _capture  # type: ignore[assignment]
+            legacy_newsletter.render_newsletter = _capture  # type: ignore[assignment]
             legacy_main.generate_newsletter(cfg, week, Path(tmpdir))
         finally:
-            legacy_newsletter.render_newsletter = original_render
+            if original_render_main is not None:
+                legacy_main.render_newsletter = original_render_main  # type: ignore[assignment]
+            legacy_newsletter.render_newsletter = original_render_module  # type: ignore[assignment]
 
     if not captured:
         raise RuntimeError("Failed to capture league payload from ingestion")
