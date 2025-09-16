@@ -322,6 +322,11 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
     except (FileNotFoundError, ValueError) as e:
         print(f"[history] {e}; starting fresh")
         history = {"teams": {}, "meta": {}}
+
+    salary_cap = _safe_float(_cfg_get(cfg, "salary_cap"), 0.0)
+    if salary_cap > 0:
+        history.setdefault("meta", {})["salary_cap"] = salary_cap
+
     # convert weekly_scores_pairs (fid, pts) to ensure all fids present
     update_history(
         history,
