@@ -325,7 +325,7 @@ def generate_newsletter(cfg: Dict[str, Any], week: int, out_dir: Path) -> Tuple[
         team_efficiency=team_efficiency,
     )
     save_history(history, history_dir)
-    season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, burn_rate_pct, ppk
+    season_table = build_season_rankings(history)  # list of dicts with rank, pts_sum, avg, stdev, luck_sum, ceiling, ceiling_ppk, burn_rate_pct, ppk, power_score
 
     payload: Dict[str, Any] = {
         "title": _cfg_get(cfg, "newsletter.title") or "NPFFL Weekly Newsletter",

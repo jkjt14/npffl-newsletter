@@ -57,15 +57,15 @@
 *{{ _rb.values_roast(_tone) }} {{ _rb.busts_roast(_tone) }}*
 
 ## Power Vibes
-We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.
+We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, salary efficiency, and who can detonate with a weekly ceiling. No spreadsheet lecture—just results.
 
 {{ _rb.power_vibes_blurb(_season_rows, _tone) }}
 
 {% if _season_rows %}
-| # | Team | Pts (YTD) | Avg |
-|---|---|---|---|
+| # | Team | Pts (YTD) | Avg | Ceiling | Ceil $/K |
+|---|---|---|---|---|---|
 {% for row in _season_rows %}
-| {{ row.rank }} | {{ row.team|e }} | {{ '%.2f'|format(row.pts_sum) }} | {{ '%.2f'|format(row.avg) }} |
+| {{ row.rank }} | {{ row.team|e }} | {{ '%.2f'|format(row.pts_sum) }} | {{ '%.2f'|format(row.avg) }} | {{ '%.2f'|format(row.ceiling) }} | {{ '%.2f'|format(row.ceiling_ppk) if row.ceiling_ppk is not none else '—' }} |
 {% endfor %}
 
 {% endif %}

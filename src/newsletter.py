@@ -304,17 +304,26 @@ def _mk_md(payload: Dict[str, Any]) -> str:
     # 5) Power Vibes
     try:
         out.append("## Power Vibes (Season-to-Date)")
-        out.append("We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, and how cleanly salary turns into output. No spreadsheet lecture—just results.")
+        out.append("We rank teams by what actually wins weeks: **points stacked**, a touch of **consistency**, salary efficiency, and who can detonate with a weekly ceiling. No spreadsheet lecture—just results.")
         out.append("")
         out.append(rb.power_vibes_blurb(season_rank, tone))
         out.append("")
         if season_rank:
-            headers = ["#", "Team", "Pts (YTD)", "Avg"]
+            headers = ["#", "Team", "Pts (YTD)", "Avg", "Ceiling", "Ceil $/K"]
             rows = []
             for r in season_rank:
                 fid = str(r["id"]).zfill(4)
                 logo_html = _embed_logo_html(fid, r["team"], logos_dir)
-                rows.append([str(r["rank"]), logo_html, _fmt2(r["pts_sum"]), _fmt2(r["avg"])])
+                ceil_ppk_val = r.get("ceiling_ppk")
+                ceil_ppk = _fmt2(ceil_ppk_val) if ceil_ppk_val is not None else "—"
+                rows.append([
+                    str(r["rank"]),
+                    logo_html,
+                    _fmt2(r.get("pts_sum")),
+                    _fmt2(r.get("avg")),
+                    _fmt2(r.get("ceiling")),
+                    ceil_ppk,
+                ])
             out.append(_mini_table(headers, rows))
         roast_line = _roast_quote(("fire", rb.power_vibes_roast(tone)))
         if roast_line:

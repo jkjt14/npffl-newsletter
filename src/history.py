@@ -75,6 +75,7 @@ def update_history(
 
 def build_season_rankings(history: History) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
+    metrics: List[Dict[str, float]] = []
     for fid, t in (history.get("teams") or {}).items():
         weeks = sorted(t.get("weeks", []), key=lambda w: int(w.get("week", 0)))
         if not weeks:
@@ -88,6 +89,11 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         avg = (pts_sum / len(pts_list)) if pts_list else 0.0
         avg_cpp = (sum(cpp_list)/len(cpp_list)) if cpp_list else 0.0
         ppk = (pts_sum / (sal_sum/1000)) if sal_sum > 0 else 0.0  # hidden efficiency
+        ceiling = max(pts_list) if pts_list else 0.0
+        max_week_sal = max([float(w.get("sal", 0.0)) for w in weeks] or [0.0])
+        ceiling_ppk_val: float | None = None
+        if max_week_sal > 0:
+            ceiling_ppk_val = ceiling / (max_week_sal / 1000.0)
 
         out.append({
             "id": fid,
@@ -99,6 +105,16 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
             "luck_sum": round(luck_sum, 2),
             "avg_cpp": round(avg_cpp, 4),
             "ppk": round(ppk, 4),
+            "ceiling": round(ceiling, 2),
+            "ceiling_ppk": round(ceiling_ppk_val, 4) if ceiling_ppk_val is not None else None,
+        })
+
+        metrics.append({
+            "ppk": float(ppk),
+            "avg": float(avg),
+            "stdev": float(stdev),
+            "ceiling": float(ceiling),
+            "ceiling_ppk": float(ceiling_ppk_val) if ceiling_ppk_val is not None else 0.0,
         })
 
     # compute league avg cpp for relative “salary burn rate”
@@ -114,8 +130,52 @@ def build_season_rankings(history: History) -> List[Dict[str, Any]]:
         else:
             r["burn_rate_pct"] = 0.0
 
-    # rank by hidden efficiency (ppk), tie-break avg then stdev (lower stdev = more consistent)
-    out.sort(key=lambda x: (-x["ppk"], -x["avg"], x["stdev"]))
+    if not out:
+        return out
+
+    def _norm(val: float, low: float, high: float) -> float:
+        if high - low <= 1e-9:
+            return 0.0
+        return (val - low) / (high - low)
+
+    ppk_vals = [m["ppk"] for m in metrics]
+    avg_vals = [m["avg"] for m in metrics]
+    ceil_vals = [m["ceiling"] for m in metrics]
+    ceil_ppk_vals = [m["ceiling_ppk"] for m in metrics]
+    stdev_vals = [m["stdev"] for m in metrics]
+
+    ppk_low, ppk_high = (min(ppk_vals), max(ppk_vals)) if ppk_vals else (0.0, 0.0)
+    avg_low, avg_high = (min(avg_vals), max(avg_vals)) if avg_vals else (0.0, 0.0)
+    ceil_low, ceil_high = (min(ceil_vals), max(ceil_vals)) if ceil_vals else (0.0, 0.0)
+    ceil_ppk_low, ceil_ppk_high = (min(ceil_ppk_vals), max(ceil_ppk_vals)) if ceil_ppk_vals else (0.0, 0.0)
+    stdev_low, stdev_high = (min(stdev_vals), max(stdev_vals)) if stdev_vals else (0.0, 0.0)
+
+    for r, m in zip(out, metrics):
+        norm_ppk = _norm(m["ppk"], ppk_low, ppk_high)
+        norm_avg = _norm(m["avg"], avg_low, avg_high)
+        norm_ceiling = _norm(m["ceiling"], ceil_low, ceil_high)
+        norm_ceiling_ppk = _norm(m["ceiling_ppk"], ceil_ppk_low, ceil_ppk_high)
+        consistency = 1.0 - _norm(m["stdev"], stdev_low, stdev_high)
+        consistency = max(0.0, min(1.0, consistency))
+        power_score = (
+            0.35 * norm_ppk
+            + 0.25 * norm_avg
+            + 0.2 * norm_ceiling
+            + 0.1 * norm_ceiling_ppk
+            + 0.1 * consistency
+        )
+        r["power_score"] = round(power_score, 4)
+
+    # rank by composite power score (ppk, avg, ceiling, and consistency)
+    out.sort(
+        key=lambda x: (
+            -x.get("power_score", 0.0),
+            -x.get("ppk", 0.0),
+            -x.get("avg", 0.0),
+            -x.get("ceiling", 0.0),
+            x.get("stdev", 0.0),
+        )
+    )
     # assign rank
     for i, r in enumerate(out, 1):
         r["rank"] = i
